@@ -266,7 +266,7 @@ select {
         <option value="pulse-quiet">ATX1P — Pulse (Quiet/Muted)</option>
       </select>
     </label>
-    <label>Number: <input type="text" id="phone-number" value="555-0147"></label>
+    <label>Number: <input type="text" id="phone-number" value="123-456-7890"></label>
     <label>Line Quality:
       <input type="range" id="line-quality" min="0" max="100" value="80">
       <span id="quality-display">80%</span>
@@ -1756,9 +1756,38 @@ spectrogramCanvas.addEventListener('click', e => {
 spectrogramCanvas.style.cursor = 'crosshair';
 
 document.getElementById('dial-mode').addEventListener('change', () => {
+  saveSettings();
   simulateToPhase('dialing');
 });
 
+const SETTINGS_KEY = 'modem-sim-settings';
+const settingIds = ['dial-mode', 'phone-number', 'line-quality', 'protocol', 'volume'];
+
+function saveSettings() {
+  const s = {};
+  settingIds.forEach(id => {
+    s[id] = document.getElementById(id).value;
+  });
+  try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(s)); } catch(e) {}
+}
+
+function loadSettings() {
+  try {
+    const s = JSON.parse(localStorage.getItem(SETTINGS_KEY));
+    if (!s) return;
+    settingIds.forEach(id => {
+      if (s[id] != null) document.getElementById(id).value = s[id];
+    });
+    document.getElementById('quality-display').textContent = document.getElementById('line-quality').value + '%';
+  } catch(e) {}
+}
+
+['dial-mode', 'phone-number', 'line-quality', 'protocol', 'volume'].forEach(id => {
+  document.getElementById(id).addEventListener('change', saveSettings);
+  document.getElementById(id).addEventListener('input', saveSettings);
+});
+
+loadSettings();
 buildTimeline();
 
 </script>
