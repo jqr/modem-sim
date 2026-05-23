@@ -257,6 +257,82 @@ select {
 .log-entry .time { color: #444; }
 .log-entry .msg { color: #888; }
 .log-entry.highlight .msg { color: #00ff41; }
+
+.info-wrapper {
+  width: 280px;
+  border-left: 1px solid #333;
+  display: flex;
+  flex-direction: column;
+  flex-shrink: 0;
+}
+
+.credit {
+  font-size: 10px;
+  color: #666;
+  text-align: left;
+  padding: 6px 12px;
+  flex-shrink: 0;
+  border-top: 1px solid #333;
+}
+
+.credit a { color: #888; text-decoration: none; }
+
+@media (max-width: 900px) {
+  header {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 8px;
+    padding: 8px 12px;
+  }
+
+  .controls { gap: 8px; }
+
+  .main {
+    flex-direction: column;
+    overflow-y: auto;
+  }
+
+  .viz-panel {
+    min-height: 300px;
+    flex-shrink: 0;
+  }
+
+  .info-wrapper {
+    width: 100%;
+    border-left: none;
+    border-top: 1px solid #333;
+    flex-shrink: 0;
+  }
+
+  .info-panel {
+    width: 100% !important;
+    overflow-y: visible !important;
+    border-left: none !important;
+  }
+
+  .phase-display, .stats, .log {
+    border-left: none;
+    border-right: none;
+  }
+
+  .log { min-height: 60px; }
+}
+
+@media (max-width: 500px) {
+  header h1 { font-size: 12px; }
+
+  label { font-size: 10px; }
+
+  select, input[type="text"] { font-size: 11px; padding: 3px 6px; }
+
+  input[type="text"] { width: 100px; }
+
+  button { padding: 5px 10px; font-size: 11px; }
+
+  .info-wrapper { font-size: 10px; }
+
+  .phase-name { font-size: 14px; }
+}
 </style>
 </head>
 <body>
@@ -306,7 +382,7 @@ select {
     </div>
   </div>
 
-  <div style="width: 280px; border-left: 1px solid #333; display: flex; flex-direction: column; flex-shrink: 0;">
+  <div class="info-wrapper">
     <div class="info-panel" style="flex: 1; border-left: none;">
       <div class="phase-display">
         <h3 id="phase-header">Current Phase</h3>
@@ -352,7 +428,7 @@ select {
         <div id="log-content"></div>
       </div>
     </div>
-    <div style="font-size: 10px; color: #666; text-align: left; padding: 6px 12px; flex-shrink: 0; border-top: 1px solid #333;">An afternoon of exploration by<br><a href="https://thejqr.com" style="color: #888; text-decoration: none;">@jqr</a> and <a href="https://claude.ai" style="color: #888; text-decoration: none;">Claude</a></div>
+    <div class="credit">An afternoon of exploration by<br><a href="https://thejqr.com">@jqr</a> and <a href="https://claude.ai">Claude</a></div>
   </div>
 </div>
 
