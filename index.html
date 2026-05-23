@@ -256,7 +256,6 @@ select {
   <div class="controls">
     <button id="btn-dial" onclick="startHandshake()">Dial</button>
     <button id="btn-pause" onclick="togglePause()" disabled>Pause</button>
-    <button id="btn-stop" onclick="stopHandshake()" disabled>Stop</button>
     <label>Number: <input type="text" id="phone-number" value="555-0147"></label>
     <label>Line Quality:
       <input type="range" id="line-quality" min="0" max="100" value="80">
@@ -1074,10 +1073,9 @@ function jumpToPhase(phaseId, exactX = null) {
   // Restart
   handshakeRunning = true;
   handshakeAbort = () => {};
-  document.getElementById('btn-dial').disabled = true;
+  document.getElementById('btn-dial').textContent = 'Redial';
   document.getElementById('btn-pause').disabled = false;
   document.getElementById('btn-pause').textContent = 'Pause';
-  document.getElementById('btn-stop').disabled = false;
 
   if (!animFrameId) drawViz();
 
@@ -1419,15 +1417,18 @@ async function startHandshake() {
 
   handshakeRunning = true;
   paused = false;
-  document.getElementById('btn-dial').disabled = true;
+  document.getElementById('btn-dial').textContent = 'Redial';
   document.getElementById('btn-pause').disabled = false;
   document.getElementById('btn-pause').textContent = 'Pause';
-  document.getElementById('btn-stop').disabled = false;
   document.getElementById('log-content').innerHTML = '';
 
   setVolume(document.getElementById('volume').value / 100 * 0.8);
   buildTimeline();
   initViz();
+  if (animFrameId) {
+    cancelAnimationFrame(animFrameId);
+    animFrameId = null;
+  }
   drawViz();
 
   handshakeAbort = () => {};
@@ -1451,7 +1452,6 @@ function togglePause() {
       pauseResolve();
       pauseResolve = null;
     }
-    drawViz();
   }
 }
 
@@ -1466,8 +1466,6 @@ function stopHandshake() {
   handshakeAbort = null;
   handshakeRunning = false;
   stopAllNodes();
-  document.getElementById('btn-dial').disabled = false;
-  document.getElementById('btn-stop').disabled = true;
   document.getElementById('btn-pause').disabled = true;
   document.getElementById('btn-pause').textContent = 'Pause';
 }
