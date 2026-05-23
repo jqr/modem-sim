@@ -9,12 +9,28 @@ Browser-based audio simulator that recreates the sound and behavior of a dialup 
 **Dial Tone (US)** — 350 Hz + 440 Hz continuous
 - Source: Precise Tone Plan (LSSGR FSD 01-02-0025), Bellcore GR-506
 
-**DTMF Dialing** — Dual-tone multi-frequency, 70ms on / 70ms off
+**DTMF Dialing** — Dual-tone multi-frequency
 - Each digit is two simultaneous tones from a 4x3 matrix
 - Row frequencies: 697, 770, 852, 941 Hz
 - Column frequencies: 1209, 1336, 1477 Hz
+- Tone duration controlled by S11 register (50–255ms, default 95ms)
+- Gap between digits equals tone duration (S11 value)
 - Source: ITU-T Q.23, ITU-T Q.24
 - https://en.wikipedia.org/wiki/Dual-tone_multi-frequency_signaling
+
+**Pulse Dialing** — Line interruption at 10 pulses/sec
+- Each digit is encoded as N pulses (1–9 = 1–9 pulses, 0 = 10 pulses)
+- US make/break ratio: 39% make / 61% break (39ms on, 61ms off per pulse)
+- European make/break ratio: 33% make / 67% break
+- Inter-digit pause: ~700ms
+- What you hear through modem speaker vs. phone handset differs:
+  - **Phone handset**: receiver is muted/short-circuited during dialing by an off-normal switch on the dial mechanism. User hears very little — faint muffled clicks at most. Telephone designers deliberately suppressed pulse noise using varistors or circuit disconnection.
+  - **Modem speaker**: monitors the line directly with no muting circuit. You hear the line signal being rapidly gated on and off — bursts of line noise (and dial tone on the very first pulse before the exchange drops it) during make periods, silence during break periods.
+- The first pulse of the first digit interrupts the dial tone; the exchange recognizes dialing has begun and drops the dial tone for all subsequent pulses.
+- Source: ITU-T Q.23
+- https://en.wikipedia.org/wiki/Pulse_dialing
+- https://en.wikipedia.org/wiki/Rotary_dial
+- https://www.3amsystems.com/World_Tone_Database/Signalling_guide?q=Pulse_dialing
 
 **Ringback (US)** — 440 Hz + 480 Hz, 2s on / 4s off cadence
 - Source: Bellcore GR-506
@@ -83,8 +99,12 @@ Browser-based audio simulator that recreates the sound and behavior of a dialup 
 - ITU-T V.34: https://www.itu.int/rec/T-REC-V.34
 - ITU-T V.90: https://www.itu.int/rec/T-REC-V.90
 - DTMF: https://en.wikipedia.org/wiki/Dual-tone_multi-frequency_signaling
+- Pulse dialing: https://en.wikipedia.org/wiki/Pulse_dialing
+- Rotary dial mechanics: https://en.wikipedia.org/wiki/Rotary_dial
+- World Tone Database (pulse dialing): https://www.3amsystems.com/World_Tone_Database/Signalling_guide?q=Pulse_dialing
 - V.34 protocol walkthrough: https://en.wikipedia.org/wiki/V.34
 - Modem sounds explained: https://oona.windytan.com/posters/dialup-final.png (Windytan's spectrogram poster)
+- Why dial-up modems made noise: https://www.howtogeek.com/670455/why-did-dial-up-modems-screech-and-make-funny-noises/
 - Web Audio API: https://developer.mozilla.org/en-US/docs/Web/API/Web_Audio_API
 
 ### Accuracy Notes

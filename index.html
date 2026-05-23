@@ -257,11 +257,13 @@ select {
   <div class="controls">
     <button id="btn-dial" onclick="startHandshake()">Dial</button>
     <button id="btn-pause" onclick="togglePause()" disabled>Pause</button>
-    <label>Init:
-      <select id="init-string">
-        <option value="pulse">ATX1P — Pulse Dialing</option>
-        <option value="normal" selected>ATS11=95T — Normal Dialing</option>
-        <option value="fast">ATS11=50T — Fast Dialing</option>
+    <label>Dialing:
+      <select id="dial-mode">
+        <option value="normal" selected>ATS11=95T — Tone</option>
+        <option value="fast">ATS11=50T — Tone (Fast)</option>
+        <option value="pulse-gated">ATX1P — Pulse (Line Gating)</option>
+        <option value="pulse-click">ATX1P — Pulse (Relay Clicks)</option>
+        <option value="pulse-quiet">ATX1P — Pulse (Quiet/Muted)</option>
       </select>
     </label>
     <label>Number: <input type="text" id="phone-number" value="555-0147"></label>
@@ -285,11 +287,11 @@ select {
 
 <div class="main">
   <div class="viz-panel">
-    <div class="viz-row" style="flex: 1">
-      <span class="viz-label">Waveform</span>
-      <canvas id="waveform"></canvas>
+    <div class="viz-row" style="flex: 0 0 80px">
+      <span class="viz-label">Signal Level</span>
+      <canvas id="level-trace"></canvas>
     </div>
-    <div class="viz-row" style="flex: 2">
+    <div class="viz-row" style="flex: 1">
       <span class="viz-label">Spectrogram</span>
       <canvas id="spectrogram"></canvas>
     </div>
@@ -699,7 +701,7 @@ const DTMF_FREQS = {
 const PHASES = [
   { id: 'pickup',    name: 'Off Hook',                 detail: 'Taking phone off hook' },
   { id: 'dialtone',  name: 'Dial Tone',                detail: '350 Hz + 440 Hz continuous (US)' },
-  { id: 'dialing',   name: 'DTMF Dialing',             detail: 'Dual-tone multi-frequency digits' },
+  { id: 'dialing',   name: 'Dialing',                   detail: 'Tone (DTMF) or Pulse' },
   { id: 'ringing',   name: 'Ringback',                 detail: '440 Hz + 480 Hz, 2s on / 4s off' },
   { id: 'answer',    name: 'ANSam Tone',               detail: '2100 Hz + 15 Hz AM, phase reversals every 450ms (V.8)' },
   { id: 'v8cm',      name: 'V.8 Originate (CM)',       detail: 'V.21 FSK, mark 1650 Hz / space 1850 Hz, 300 baud' },
@@ -826,6 +828,9 @@ function advanceSpectrogramSkip(pixels) {
   const plotW = spectrogramImageData.width;
   spectrogramX = (spectrogramX + pixels) % plotW;
   if (spectrogramX > spectrogramMaxX) spectrogramMaxX = spectrogramX;
+  if (levelHistory) {
+    levelHistoryX = Math.min(levelHistoryX + pixels, levelHistory.length - 1);
+  }
 }
 
 function sleep(ms) {
@@ -867,13 +872,13 @@ async function runHandshake(startPhaseId = null, skipToPhaseId = null) {
 
   const phases = [
     { id: 'pickup', run: async () => {
-      const initSel = document.getElementById('init-string');
-      const initMode = initSel.value;
-      const initText = initSel.options[initSel.selectedIndex].text.split('—')[0].trim();
+      const dialSel = document.getElementById('dial-mode');
+      const mode = dialSel.value;
+      const initText = dialSel.options[dialSel.selectedIndex].text.split('—')[0].trim();
       addLog(initText);
       addLog('OK');
       await sleep(300);
-      addLog(`ATD${initMode === 'pulse' ? 'P' : 'T'}${phoneNumber}`);
+      addLog(`ATD${mode.startsWith('pulse') ? 'P' : 'T'}${phoneNumber}`);
       await sleep(200);
     }},
 
@@ -889,54 +894,111 @@ async function runHandshake(startPhaseId = null, skipToPhaseId = null) {
     }},
 
     { id: 'dialing', run: async () => {
-      const initMode = document.getElementById('init-string').value;
-      const dialMode = initMode === 'pulse' ? 'pulse' : 'tone';
-      const s11 = initMode === 'fast' ? 50 : 95;
+      const mode = document.getElementById('dial-mode').value;
 
-      if (dialMode === 'pulse') {
-        // Pulse dialing: ~10 pulses/sec, digit value = number of pulses (0 = 10)
-        // Each pulse: line breaks for 60ms, closes for 40ms (make/break ratio)
-        setStat('freq', 'Pulse dialing');
+      if (mode === 'pulse-gated') {
+        // Line gating: modem speaker hears line noise chopped on/off
+        setStat('freq', 'Pulse 10 pps');
+        const pulseNoise = createLineNoise(0.15);
+        pulseNoise.start();
+        const pulseGate = audioCtx.createGain();
+        pulseGate.gain.value = 0;
+        pulseNoise._gainNode.disconnect();
+        pulseNoise._gainNode.connect(pulseGate);
+        pulseGate.connect(masterGain);
+
+        const dt1 = createOsc(350, 'sine', 0.12);
+        const dt2 = createOsc(440, 'sine', 0.12);
+        const dtGate = audioCtx.createGain();
+        dtGate.gain.value = 0;
+        dt1._gainNode.disconnect(); dt1._gainNode.connect(dtGate);
+        dt2._gainNode.disconnect(); dt2._gainNode.connect(dtGate);
+        dtGate.connect(masterGain);
+        dt1.start(); dt2.start();
+
+        let firstPulse = true;
         for (const digit of phoneNumber) {
           const pulses = digit === '0' ? 10 : parseInt(digit);
           if (isNaN(pulses)) continue;
           for (let p = 0; p < pulses; p++) {
-            // Break click: sharp impulse as relay opens
-            const clickBuf = audioCtx.createBuffer(1, 200, audioCtx.sampleRate);
-            const clickData = clickBuf.getChannelData(0);
-            clickData[0] = 1; clickData[1] = -0.8; clickData[2] = 0.5; clickData[3] = -0.3;
-            for (let s = 4; s < 200; s++) clickData[s] = (Math.random() * 2 - 1) * Math.exp(-s / 15);
-            const clickSrc = audioCtx.createBufferSource();
-            clickSrc.buffer = clickBuf;
-            const clickGain = audioCtx.createGain();
-            clickGain.gain.value = 0.5;
-            clickSrc.connect(clickGain);
-            clickGain.connect(masterGain);
-            trackNode(clickSrc);
-            clickSrc.start();
-            // Break period: 60ms silence (line open)
-            await sleep(60);
-            // Make click: snap as relay closes
-            const makeBuf = audioCtx.createBuffer(1, 150, audioCtx.sampleRate);
-            const makeData = makeBuf.getChannelData(0);
-            makeData[0] = 0.7; makeData[1] = -0.5;
-            for (let s = 2; s < 150; s++) makeData[s] = (Math.random() * 2 - 1) * Math.exp(-s / 10);
-            const makeSrc = audioCtx.createBufferSource();
-            makeSrc.buffer = makeBuf;
-            const makeGain = audioCtx.createGain();
-            makeGain.gain.value = 0.4;
-            makeSrc.connect(makeGain);
-            makeGain.connect(masterGain);
-            trackNode(makeSrc);
-            makeSrc.start();
-            // Make period: 40ms (line closed)
-            await sleep(40);
+            pulseGate.gain.setValueAtTime(0, audioCtx.currentTime);
+            dtGate.gain.setValueAtTime(0, audioCtx.currentTime);
+            await sleep(61);
+            pulseGate.gain.setValueAtTime(1, audioCtx.currentTime);
+            if (firstPulse) {
+              dtGate.gain.setValueAtTime(1, audioCtx.currentTime);
+              firstPulse = false;
+            }
+            await sleep(39);
           }
-          // Inter-digit pause (700ms)
+          dt1.stop(); dt2.stop();
+          pulseGate.gain.setValueAtTime(1, audioCtx.currentTime);
           await sleep(700);
         }
+        pulseNoise.stop();
+        pulseGate.disconnect();
+
+      } else if (mode === 'pulse-click') {
+        // Relay clicks: sharp impulses for each make/break transition
+        setStat('freq', 'Pulse 10 pps');
+        for (const digit of phoneNumber) {
+          const pulses = digit === '0' ? 10 : parseInt(digit);
+          if (isNaN(pulses)) continue;
+          for (let p = 0; p < pulses; p++) {
+            const clickBuf = audioCtx.createBuffer(1, 200, audioCtx.sampleRate);
+            const cd = clickBuf.getChannelData(0);
+            cd[0] = 1; cd[1] = -0.8; cd[2] = 0.5; cd[3] = -0.3;
+            for (let s = 4; s < 200; s++) cd[s] = (Math.random() * 2 - 1) * Math.exp(-s / 15);
+            const src = audioCtx.createBufferSource();
+            src.buffer = clickBuf;
+            const g = audioCtx.createGain();
+            g.gain.value = 0.5;
+            src.connect(g); g.connect(masterGain);
+            trackNode(src);
+            src.start();
+            await sleep(61);
+            const makeBuf = audioCtx.createBuffer(1, 150, audioCtx.sampleRate);
+            const md = makeBuf.getChannelData(0);
+            md[0] = 0.7; md[1] = -0.5;
+            for (let s = 2; s < 150; s++) md[s] = (Math.random() * 2 - 1) * Math.exp(-s / 10);
+            const ms2 = audioCtx.createBufferSource();
+            ms2.buffer = makeBuf;
+            const g2 = audioCtx.createGain();
+            g2.gain.value = 0.4;
+            ms2.connect(g2); g2.connect(masterGain);
+            trackNode(ms2);
+            ms2.start();
+            await sleep(39);
+          }
+          await sleep(700);
+        }
+
+      } else if (mode === 'pulse-quiet') {
+        // Muted receiver: very faint clicks, like through a real phone handset
+        setStat('freq', 'Pulse 10 pps (muted)');
+        for (const digit of phoneNumber) {
+          const pulses = digit === '0' ? 10 : parseInt(digit);
+          if (isNaN(pulses)) continue;
+          for (let p = 0; p < pulses; p++) {
+            const clickBuf = audioCtx.createBuffer(1, 300, audioCtx.sampleRate);
+            const cd = clickBuf.getChannelData(0);
+            cd[0] = 0.3; cd[1] = -0.2;
+            for (let s = 2; s < 300; s++) cd[s] = (Math.random() * 2 - 1) * Math.exp(-s / 30) * 0.15;
+            const src = audioCtx.createBufferSource();
+            src.buffer = clickBuf;
+            const g = audioCtx.createGain();
+            g.gain.value = 0.12;
+            src.connect(g); g.connect(masterGain);
+            trackNode(src);
+            src.start();
+            await sleep(100);
+          }
+          await sleep(700);
+        }
+
       } else {
-        // DTMF tone dialing with S11 register timing
+        // Tone dialing (DTMF) with S11 register timing
+        const s11 = mode === 'fast' ? 50 : 95;
         for (const digit of phoneNumber) {
           const freqs = DTMF_FREQS[digit];
           if (!freqs) continue;
@@ -1222,6 +1284,8 @@ let peakHold = null;
 let peakDecay = 0.995;
 let phaseMarkers = [];
 let lastFreqData = null;
+let levelHistory = null;
+let levelHistoryX = 0;
 
 function initViz() {
   resizeCanvases();
@@ -1230,10 +1294,12 @@ function initViz() {
   spectrogramMaxX = 0;
   peakHold = null;
   phaseMarkers = [];
+  levelHistory = null;
+  levelHistoryX = 0;
 }
 
 function resizeCanvases() {
-  ['waveform', 'spectrogram'].forEach(id => {
+  ['level-trace', 'spectrogram'].forEach(id => {
     const canvas = document.getElementById(id);
     const rect = canvas.parentElement.getBoundingClientRect();
     canvas.width = Math.floor(rect.width * devicePixelRatio);
@@ -1252,7 +1318,7 @@ function drawViz() {
   analyser.getByteFrequencyData(freqDomain);
 
   lastFreqData = freqDomain;
-  drawWaveform(timeDomain);
+  drawLevelTrace(timeDomain);
 
   if (handshakeRunning && !paused) {
     drawSpectrogram(freqDomain);
@@ -1263,61 +1329,105 @@ function drawViz() {
   updateStats(freqDomain, timeDomain);
 }
 
-function drawWaveform(data) {
-  const canvas = document.getElementById('waveform');
+function drawLevelTrace(data) {
+  const canvas = document.getElementById('level-trace');
   const ctx = canvas.getContext('2d');
   const w = canvas.width, h = canvas.height;
   const dpr = devicePixelRatio;
+  const marginLeft = 35 * dpr;
+  const plotW = w - marginLeft;
+
+  if (!levelHistory || levelHistory.length !== plotW) {
+    levelHistory = new Float32Array(plotW);
+    levelHistoryX = 0;
+  }
+
+  // Compute RMS
+  let sumSq = 0;
+  for (let i = 0; i < data.length; i++) {
+    const v = (data[i] - 128) / 128;
+    sumSq += v * v;
+  }
+  const rms = Math.sqrt(sumSq / data.length);
+
+  // Store if actively advancing
+  if (handshakeRunning && !paused) {
+    levelHistory[levelHistoryX] = rms;
+    levelHistoryX = (levelHistoryX + 1) % plotW;
+  }
 
   ctx.fillStyle = '#0a0a0a';
   ctx.fillRect(0, 0, w, h);
 
-  // Horizontal grid
+  // dB grid lines
   ctx.strokeStyle = '#1a1a1a';
   ctx.lineWidth = 1;
-  for (let i = 1; i < 8; i++) {
-    const y = (i / 8) * h;
-    ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(w, y); ctx.stroke();
-  }
-
-  // Center line
-  ctx.strokeStyle = '#2a2a2a';
-  ctx.beginPath(); ctx.moveTo(0, h / 2); ctx.lineTo(w, h / 2); ctx.stroke();
-
-  // dB scale labels on left
   ctx.fillStyle = '#333';
   ctx.font = `${9 * dpr}px Courier New`;
-  ctx.textAlign = 'left';
-  ctx.fillText('  0', 4 * dpr, h * 0.125 + 3 * dpr);
-  ctx.fillText(' -6', 4 * dpr, h * 0.25 + 3 * dpr);
-  ctx.fillText('-12', 4 * dpr, h * 0.375 + 3 * dpr);
-
-  // Glow layer
-  ctx.strokeStyle = 'rgba(0, 255, 65, 0.15)';
-  ctx.lineWidth = 5 * dpr;
-  ctx.beginPath();
-  const sliceWidth = w / data.length;
-  let x = 0;
-  for (let i = 0; i < data.length; i++) {
-    const v = data[i] / 128.0;
-    const y = (v * h) / 2;
-    if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
-    x += sliceWidth;
+  ctx.textAlign = 'right';
+  const dbMarks = [0, -10, -20, -30, -40];
+  for (const db of dbMarks) {
+    const level = Math.pow(10, db / 20);
+    const y = h * (1 - level);
+    ctx.beginPath(); ctx.moveTo(marginLeft, y); ctx.lineTo(w, y); ctx.stroke();
+    if (db < 0) ctx.fillText(`${db}`, marginLeft - 4 * dpr, y + 3 * dpr);
   }
+
+  // Draw from 0 to levelHistoryX (left to right, matching spectrogram)
+  function tracePath() {
+    for (let i = 0; i < plotW; i++) {
+      const level = Math.min(1, levelHistory[i] * 3);
+      const x = marginLeft + i;
+      const y = h * (1 - level);
+      if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+    }
+  }
+
+  // Filled level trace
+  ctx.beginPath();
+  ctx.moveTo(marginLeft, h);
+  tracePath();
+  ctx.lineTo(marginLeft + plotW, h);
+  ctx.closePath();
+
+  const gradient = ctx.createLinearGradient(0, h, 0, 0);
+  gradient.addColorStop(0, 'rgba(0, 80, 20, 0.1)');
+  gradient.addColorStop(0.3, 'rgba(0, 180, 40, 0.2)');
+  gradient.addColorStop(1, 'rgba(0, 255, 65, 0.4)');
+  ctx.fillStyle = gradient;
+  ctx.fill();
+
+  // Glow
+  ctx.strokeStyle = 'rgba(0, 255, 65, 0.15)';
+  ctx.lineWidth = 4 * dpr;
+  ctx.beginPath();
+  tracePath();
   ctx.stroke();
 
-  // Waveform line
+  // Level line
   ctx.strokeStyle = '#00ff41';
   ctx.lineWidth = 1.5 * dpr;
   ctx.beginPath();
-  x = 0;
-  for (let i = 0; i < data.length; i++) {
-    const v = data[i] / 128.0;
-    const y = (v * h) / 2;
-    if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
-    x += sliceWidth;
-  }
+  tracePath();
   ctx.stroke();
+
+  // Playhead at current write position
+  ctx.strokeStyle = 'rgba(255, 255, 255, 0.3)';
+  ctx.lineWidth = 1;
+  const headX = marginLeft + levelHistoryX;
+  ctx.beginPath(); ctx.moveTo(headX, 0); ctx.lineTo(headX, h); ctx.stroke();
+
+  // Left margin background
+  ctx.fillStyle = '#0a0a0a';
+  ctx.fillRect(0, 0, marginLeft, h);
+  ctx.fillStyle = '#333';
+  ctx.font = `${9 * dpr}px Courier New`;
+  ctx.textAlign = 'right';
+  for (const db of dbMarks) {
+    const level = Math.pow(10, db / 20);
+    const y = h * (1 - level);
+    if (db <= 0) ctx.fillText(`${db}`, marginLeft - 4 * dpr, y + 3 * dpr);
+  }
 }
 
 function drawSpectrogram(data) {
@@ -1644,6 +1754,10 @@ spectrogramCanvas.addEventListener('click', e => {
 });
 
 spectrogramCanvas.style.cursor = 'crosshair';
+
+document.getElementById('dial-mode').addEventListener('change', () => {
+  simulateToPhase('dialing');
+});
 
 buildTimeline();
 
