@@ -257,6 +257,13 @@ select {
   <div class="controls">
     <button id="btn-dial" onclick="startHandshake()">Dial</button>
     <button id="btn-pause" onclick="togglePause()" disabled>Pause</button>
+    <label>Init:
+      <select id="init-string">
+        <option value="pulse">ATX1P — Pulse Dialing</option>
+        <option value="normal" selected>ATS11=95T — Normal Dialing</option>
+        <option value="fast">ATS11=50T — Fast Dialing</option>
+      </select>
+    </label>
     <label>Number: <input type="text" id="phone-number" value="555-0147"></label>
     <label>Line Quality:
       <input type="range" id="line-quality" min="0" max="100" value="80">
@@ -691,7 +698,7 @@ const DTMF_FREQS = {
 
 const PHASES = [
   { id: 'pickup',    name: 'Off Hook',                 detail: 'Taking phone off hook' },
-  { id: 'dialtone',  name: 'Dial Tone',                detail: '350 Hz + 440 Hz continuous' },
+  { id: 'dialtone',  name: 'Dial Tone',                detail: '350 Hz + 440 Hz continuous (US)' },
   { id: 'dialing',   name: 'DTMF Dialing',             detail: 'Dual-tone multi-frequency digits' },
   { id: 'ringing',   name: 'Ringback',                 detail: '440 Hz + 480 Hz, 2s on / 4s off' },
   { id: 'answer',    name: 'ANSam Tone',               detail: '2100 Hz + 15 Hz AM, phase reversals every 450ms (V.8)' },
@@ -860,10 +867,13 @@ async function runHandshake(startPhaseId = null, skipToPhaseId = null) {
 
   const phases = [
     { id: 'pickup', run: async () => {
-      addLog('ATZ');
+      const initSel = document.getElementById('init-string');
+      const initMode = initSel.value;
+      const initText = initSel.options[initSel.selectedIndex].text.split('—')[0].trim();
+      addLog(initText);
       addLog('OK');
       await sleep(300);
-      addLog(`ATD${phoneNumber}`);
+      addLog(`ATD${initMode === 'pulse' ? 'P' : 'T'}${phoneNumber}`);
       await sleep(200);
     }},
 
@@ -879,16 +889,65 @@ async function runHandshake(startPhaseId = null, skipToPhaseId = null) {
     }},
 
     { id: 'dialing', run: async () => {
-      for (const digit of phoneNumber) {
-        const freqs = DTMF_FREQS[digit];
-        if (!freqs) continue;
-        setStat('freq', `${freqs[0]} + ${freqs[1]} Hz`);
-        const o1 = createOsc(freqs[0], 'sine', 0.14);
-        const o2 = createOsc(freqs[1], 'sine', 0.14);
-        o1.start(); o2.start();
-        await sleep(70);
-        o1.stop(); o2.stop();
-        await sleep(70);
+      const initMode = document.getElementById('init-string').value;
+      const dialMode = initMode === 'pulse' ? 'pulse' : 'tone';
+      const s11 = initMode === 'fast' ? 50 : 95;
+
+      if (dialMode === 'pulse') {
+        // Pulse dialing: ~10 pulses/sec, digit value = number of pulses (0 = 10)
+        // Each pulse: line breaks for 60ms, closes for 40ms (make/break ratio)
+        setStat('freq', 'Pulse dialing');
+        for (const digit of phoneNumber) {
+          const pulses = digit === '0' ? 10 : parseInt(digit);
+          if (isNaN(pulses)) continue;
+          for (let p = 0; p < pulses; p++) {
+            // Break click: sharp impulse as relay opens
+            const clickBuf = audioCtx.createBuffer(1, 200, audioCtx.sampleRate);
+            const clickData = clickBuf.getChannelData(0);
+            clickData[0] = 1; clickData[1] = -0.8; clickData[2] = 0.5; clickData[3] = -0.3;
+            for (let s = 4; s < 200; s++) clickData[s] = (Math.random() * 2 - 1) * Math.exp(-s / 15);
+            const clickSrc = audioCtx.createBufferSource();
+            clickSrc.buffer = clickBuf;
+            const clickGain = audioCtx.createGain();
+            clickGain.gain.value = 0.5;
+            clickSrc.connect(clickGain);
+            clickGain.connect(masterGain);
+            trackNode(clickSrc);
+            clickSrc.start();
+            // Break period: 60ms silence (line open)
+            await sleep(60);
+            // Make click: snap as relay closes
+            const makeBuf = audioCtx.createBuffer(1, 150, audioCtx.sampleRate);
+            const makeData = makeBuf.getChannelData(0);
+            makeData[0] = 0.7; makeData[1] = -0.5;
+            for (let s = 2; s < 150; s++) makeData[s] = (Math.random() * 2 - 1) * Math.exp(-s / 10);
+            const makeSrc = audioCtx.createBufferSource();
+            makeSrc.buffer = makeBuf;
+            const makeGain = audioCtx.createGain();
+            makeGain.gain.value = 0.4;
+            makeSrc.connect(makeGain);
+            makeGain.connect(masterGain);
+            trackNode(makeSrc);
+            makeSrc.start();
+            // Make period: 40ms (line closed)
+            await sleep(40);
+          }
+          // Inter-digit pause (700ms)
+          await sleep(700);
+        }
+      } else {
+        // DTMF tone dialing with S11 register timing
+        for (const digit of phoneNumber) {
+          const freqs = DTMF_FREQS[digit];
+          if (!freqs) continue;
+          setStat('freq', `${freqs[0]} + ${freqs[1]} Hz`);
+          const o1 = createOsc(freqs[0], 'sine', 0.14);
+          const o2 = createOsc(freqs[1], 'sine', 0.14);
+          o1.start(); o2.start();
+          await sleep(s11);
+          o1.stop(); o2.stop();
+          await sleep(s11);
+        }
       }
       addLog('Dialing complete');
       await sleep(500);
@@ -1546,6 +1605,8 @@ document.getElementById('volume').addEventListener('input', e => {
 document.getElementById('line-quality').addEventListener('input', e => {
   document.getElementById('quality-display').textContent = e.target.value + '%';
 });
+
+
 
 window.addEventListener('resize', () => {
   spectrogramImageData = null;
