@@ -18,7 +18,7 @@ body {
 }
 
 header {
-  padding: 12px 20px;
+  padding: 10px 20px;
   border-bottom: 1px solid #333;
   display: flex;
   align-items: center;
@@ -31,6 +31,7 @@ header h1 {
   color: #00ff41;
   letter-spacing: 2px;
   text-transform: uppercase;
+  white-space: nowrap;
 }
 
 .controls {
@@ -54,7 +55,6 @@ button {
 
 button:hover { background: #002200; }
 button:disabled { opacity: 0.3; cursor: default; }
-button.active { background: #003300; }
 
 label {
   font-size: 11px;
@@ -74,10 +74,7 @@ input[type="text"] {
   width: 120px;
 }
 
-input[type="range"] {
-  width: 80px;
-  accent-color: #00ff41;
-}
+input[type="range"] { width: 80px; accent-color: #00ff41; }
 
 select {
   background: #111;
@@ -136,7 +133,7 @@ select {
   padding: 12px;
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 10px;
   overflow-y: auto;
   flex-shrink: 0;
 }
@@ -221,7 +218,7 @@ select {
   padding: 8px;
   background: #0d0d0d;
   overflow-y: auto;
-  min-height: 100px;
+  min-height: 80px;
 }
 
 .log h3 {
@@ -277,7 +274,7 @@ select {
       <canvas id="waveform"></canvas>
     </div>
     <div class="viz-row">
-      <span class="viz-label">Frequency Spectrum</span>
+      <span class="viz-label">Frequency Spectrum (dB)</span>
       <canvas id="spectrum"></canvas>
     </div>
     <div class="viz-row">
@@ -302,27 +299,27 @@ select {
       <h3>Signal Stats</h3>
       <div class="stat-row">
         <span class="stat-label">Frequency</span>
-        <span class="stat-value" id="stat-freq">—</span>
+        <span class="stat-value" id="stat-freq">&mdash;</span>
       </div>
       <div class="stat-row">
         <span class="stat-label">Level</span>
-        <span class="stat-value" id="stat-level">—</span>
+        <span class="stat-value" id="stat-level">&mdash;</span>
       </div>
       <div class="stat-row">
         <span class="stat-label">SNR</span>
-        <span class="stat-value" id="stat-snr">—</span>
+        <span class="stat-value" id="stat-snr">&mdash;</span>
       </div>
       <div class="stat-row">
         <span class="stat-label">Baud Rate</span>
-        <span class="stat-value" id="stat-baud">—</span>
+        <span class="stat-value" id="stat-baud">&mdash;</span>
       </div>
       <div class="stat-row">
         <span class="stat-label">Connect Speed</span>
-        <span class="stat-value" id="stat-speed">—</span>
+        <span class="stat-value" id="stat-speed">&mdash;</span>
       </div>
       <div class="stat-row">
         <span class="stat-label">Elapsed</span>
-        <span class="stat-value" id="stat-elapsed">—</span>
+        <span class="stat-value" id="stat-elapsed">&mdash;</span>
       </div>
     </div>
 
@@ -347,17 +344,25 @@ let handshakeRunning = false;
 let handshakeAbort = null;
 let startTime = 0;
 let animFrameId = null;
+let currentPhaseId = null;
 
-const FFT_SIZE = 2048;
+const FFT_SIZE = 4096;
+const SAMPLE_RATE = 44100;
+const MAX_DISPLAY_FREQ = 5000;
 
 function initAudio() {
   if (audioCtx) return;
-  audioCtx = new AudioContext({ sampleRate: 44100 });
+  audioCtx = new AudioContext({ sampleRate: SAMPLE_RATE });
+
   masterGain = audioCtx.createGain();
   masterGain.gain.value = 0.6;
+
   analyser = audioCtx.createAnalyser();
   analyser.fftSize = FFT_SIZE;
-  analyser.smoothingTimeConstant = 0.6;
+  analyser.smoothingTimeConstant = 0.5;
+  analyser.minDecibels = -100;
+  analyser.maxDecibels = -10;
+
   masterGain.connect(analyser);
   analyser.connect(audioCtx.destination);
 }
@@ -378,8 +383,15 @@ function stopAllNodes() {
   activeNodes = [];
 }
 
-// Create an oscillator connected to master output.
-// Returns the oscillator node. Caller must call .start() and .stop().
+function trackNode(node) {
+  activeNodes.push(node);
+  return node;
+}
+
+// ============================================================
+// Audio Primitives
+// ============================================================
+
 function createOsc(freq, type = 'sine', gainVal = 0.3) {
   const osc = audioCtx.createOscillator();
   const gain = audioCtx.createGain();
@@ -388,89 +400,272 @@ function createOsc(freq, type = 'sine', gainVal = 0.3) {
   gain.gain.value = gainVal;
   osc.connect(gain);
   gain.connect(masterGain);
-  activeNodes.push(osc);
+  trackNode(osc);
   osc._gainNode = gain;
   return osc;
 }
 
-// Create noise (white/pink) as an AudioBufferSourceNode
-function createNoise(duration, gainVal = 0.1) {
-  const bufferSize = audioCtx.sampleRate * duration;
-  const buffer = audioCtx.createBuffer(1, bufferSize, audioCtx.sampleRate);
+function createNoiseBuffer(duration) {
+  const len = audioCtx.sampleRate * duration;
+  const buffer = audioCtx.createBuffer(1, len, audioCtx.sampleRate);
   const data = buffer.getChannelData(0);
-  for (let i = 0; i < bufferSize; i++) {
-    data[i] = (Math.random() * 2 - 1);
-  }
-  const source = audioCtx.createBufferSource();
-  source.buffer = buffer;
-  const gain = audioCtx.createGain();
-  gain.gain.value = gainVal;
-  source.connect(gain);
-  gain.connect(masterGain);
-  activeNodes.push(source);
-  source._gainNode = gain;
-  return source;
+  for (let i = 0; i < len; i++) data[i] = Math.random() * 2 - 1;
+  return buffer;
 }
 
-// Bandpass-filtered noise
-function createFilteredNoise(duration, freq, q, gainVal = 0.1) {
-  const bufferSize = audioCtx.sampleRate * duration;
-  const buffer = audioCtx.createBuffer(1, bufferSize, audioCtx.sampleRate);
-  const data = buffer.getChannelData(0);
-  for (let i = 0; i < bufferSize; i++) {
-    data[i] = (Math.random() * 2 - 1);
-  }
+function createFilteredNoise(duration, centerFreq, q, gainVal = 0.1) {
   const source = audioCtx.createBufferSource();
-  source.buffer = buffer;
+  source.buffer = createNoiseBuffer(duration);
   const filter = audioCtx.createBiquadFilter();
   filter.type = 'bandpass';
-  filter.frequency.value = freq;
+  filter.frequency.value = centerFreq;
   filter.Q.value = q;
   const gain = audioCtx.createGain();
   gain.gain.value = gainVal;
   source.connect(filter);
   filter.connect(gain);
   gain.connect(masterGain);
-  activeNodes.push(source);
+  trackNode(source);
   source._gainNode = gain;
   source._filterNode = filter;
   return source;
 }
 
-// Telephone-band lowpass (3.4kHz cutoff) applied to line noise
-function createLineNoise(gainVal) {
+// Telephone-band noise (300–3400 Hz) with level scaled by line quality
+function createLineNoise(baseGain) {
   const quality = getLineQuality();
-  const noiseLevel = gainVal * (1 - quality * 0.8);
-  const bufferSize = audioCtx.sampleRate * 30;
-  const buffer = audioCtx.createBuffer(1, bufferSize, audioCtx.sampleRate);
-  const data = buffer.getChannelData(0);
-  for (let i = 0; i < bufferSize; i++) {
-    data[i] = (Math.random() * 2 - 1);
-  }
+  const noiseLevel = baseGain * (1 - quality * 0.85);
   const source = audioCtx.createBufferSource();
-  source.buffer = buffer;
+  source.buffer = createNoiseBuffer(60);
   source.loop = true;
+
   const lp = audioCtx.createBiquadFilter();
   lp.type = 'lowpass';
   lp.frequency.value = 3400;
   lp.Q.value = 0.7;
+
   const hp = audioCtx.createBiquadFilter();
   hp.type = 'highpass';
   hp.frequency.value = 300;
   hp.Q.value = 0.7;
+
   const gain = audioCtx.createGain();
   gain.gain.value = noiseLevel;
+
   source.connect(lp);
   lp.connect(hp);
   hp.connect(gain);
   gain.connect(masterGain);
-  activeNodes.push(source);
+  trackNode(source);
+  source._gainNode = gain;
+  return source;
+}
+
+// 60 Hz power hum with harmonics
+function create60HzHum(gainVal) {
+  const quality = getLineQuality();
+  const level = gainVal * (1 - quality * 0.9);
+  const oscs = [];
+  [60, 120, 180].forEach((f, i) => {
+    const osc = audioCtx.createOscillator();
+    const gain = audioCtx.createGain();
+    osc.frequency.value = f;
+    gain.gain.value = level / (i + 1);
+    osc.connect(gain);
+    gain.connect(masterGain);
+    osc.start();
+    trackNode(osc);
+    oscs.push(osc);
+  });
+  return oscs;
+}
+
+// Impulse noise (crackle/pops) — generates a buffer with random spikes
+function createImpulseNoise(duration, gainVal) {
+  const quality = getLineQuality();
+  const spikeRate = (1 - quality) * 15;
+  const len = audioCtx.sampleRate * duration;
+  const buffer = audioCtx.createBuffer(1, len, audioCtx.sampleRate);
+  const data = buffer.getChannelData(0);
+
+  for (let i = 0; i < len; i++) {
+    if (Math.random() < spikeRate / audioCtx.sampleRate) {
+      const spikeLen = Math.floor(Math.random() * 80 + 20);
+      const amp = (Math.random() * 0.5 + 0.5) * (Math.random() < 0.5 ? 1 : -1);
+      for (let j = 0; j < spikeLen && i + j < len; j++) {
+        data[i + j] = amp * Math.exp(-j / (spikeLen * 0.3));
+      }
+      i += spikeLen;
+    }
+  }
+
+  const source = audioCtx.createBufferSource();
+  source.buffer = buffer;
+  source.loop = true;
+  const gain = audioCtx.createGain();
+  gain.gain.value = gainVal;
+  source.connect(gain);
+  gain.connect(masterGain);
+  trackNode(source);
+  source._gainNode = gain;
+  return source;
+}
+
+// ANSam tone: 2100 Hz with 15 Hz AM and phase reversals every 450ms (V.8 spec)
+function createANSam(duration, gainVal = 0.25) {
+  const len = audioCtx.sampleRate * duration;
+  const buffer = audioCtx.createBuffer(1, len, audioCtx.sampleRate);
+  const data = buffer.getChannelData(0);
+  const reversalInterval = Math.floor(0.45 * audioCtx.sampleRate);
+  let phase = 0;
+  let polarity = 1;
+  const carrierInc = (2 * Math.PI * 2100) / audioCtx.sampleRate;
+  const amInc = (2 * Math.PI * 15) / audioCtx.sampleRate;
+
+  for (let i = 0; i < len; i++) {
+    if (i > 0 && i % reversalInterval === 0) polarity *= -1;
+    const am = 1 + 0.2 * Math.sin(amInc * i);
+    data[i] = polarity * am * Math.sin(phase) * 0.8;
+    phase += carrierInc;
+  }
+
+  const source = audioCtx.createBufferSource();
+  source.buffer = buffer;
+  const gain = audioCtx.createGain();
+  gain.gain.value = gainVal;
+  source.connect(gain);
+  gain.connect(masterGain);
+  trackNode(source);
+  source._gainNode = gain;
+  return source;
+}
+
+// V.21 FSK modulation (300 baud) — used for V.8 CM/JM signals
+// mark=1650 Hz, space=1850 Hz for channel 2
+function createV21FSK(bitPattern, markFreq, spaceFreq, baud, gainVal = 0.2) {
+  const samplesPerBit = Math.floor(audioCtx.sampleRate / baud);
+  const totalSamples = bitPattern.length * samplesPerBit;
+  const buffer = audioCtx.createBuffer(1, totalSamples, audioCtx.sampleRate);
+  const data = buffer.getChannelData(0);
+  let phase = 0;
+
+  for (let b = 0; b < bitPattern.length; b++) {
+    const freq = bitPattern[b] === 1 ? markFreq : spaceFreq;
+    const inc = (2 * Math.PI * freq) / audioCtx.sampleRate;
+    for (let s = 0; s < samplesPerBit; s++) {
+      data[b * samplesPerBit + s] = Math.sin(phase);
+      phase += inc;
+    }
+  }
+
+  const source = audioCtx.createBufferSource();
+  source.buffer = buffer;
+  const gain = audioCtx.createGain();
+  gain.gain.value = gainVal;
+  source.connect(gain);
+  gain.connect(masterGain);
+  trackNode(source);
+  source._gainNode = gain;
+  return source;
+}
+
+// V.34 line probing: 21 tones at 150 Hz spacing (150–3300 Hz)
+function createV34Probing(duration, gainVal = 0.15) {
+  const len = audioCtx.sampleRate * duration;
+  const buffer = audioCtx.createBuffer(1, len, audioCtx.sampleRate);
+  const data = buffer.getChannelData(0);
+  const toneCount = 21;
+  const perTone = gainVal / Math.sqrt(toneCount);
+
+  for (let i = 0; i < len; i++) {
+    let sample = 0;
+    for (let t = 0; t < toneCount; t++) {
+      const freq = 150 + t * 150;
+      sample += Math.sin((2 * Math.PI * freq * i) / audioCtx.sampleRate);
+    }
+    // Fade in/out over 20ms
+    const fadeLen = 0.02 * audioCtx.sampleRate;
+    let envelope = 1;
+    if (i < fadeLen) envelope = i / fadeLen;
+    else if (i > len - fadeLen) envelope = (len - i) / fadeLen;
+
+    data[i] = sample * perTone * envelope;
+  }
+
+  const source = audioCtx.createBufferSource();
+  source.buffer = buffer;
+  const gain = audioCtx.createGain();
+  gain.gain.value = 1.0;
+  source.connect(gain);
+  gain.connect(masterGain);
+  trackNode(source);
+  source._gainNode = gain;
+  return source;
+}
+
+// Scrambled PRBS training signal — band-limited noise shaped like QAM
+function createTrainingSignal(duration, symbolRate, gainVal = 0.18) {
+  const len = audioCtx.sampleRate * duration;
+  const buffer = audioCtx.createBuffer(1, len, audioCtx.sampleRate);
+  const data = buffer.getChannelData(0);
+  const samplesPerSymbol = audioCtx.sampleRate / symbolRate;
+  const carrierFreq = 1800;
+  const carrierInc = (2 * Math.PI * carrierFreq) / audioCtx.sampleRate;
+
+  // PRBS-15 generator
+  let lfsr = 0x7FFF;
+  function nextBit() {
+    const bit = ((lfsr >> 14) ^ (lfsr >> 13)) & 1;
+    lfsr = ((lfsr << 1) | bit) & 0x7FFF;
+    return bit;
+  }
+
+  let phase = 0;
+  let symbolPhase = 0;
+  let currentSymbolI = nextBit() * 2 - 1;
+  let currentSymbolQ = nextBit() * 2 - 1;
+
+  for (let i = 0; i < len; i++) {
+    symbolPhase++;
+    if (symbolPhase >= samplesPerSymbol) {
+      symbolPhase = 0;
+      currentSymbolI = nextBit() * 2 - 1;
+      currentSymbolQ = nextBit() * 2 - 1;
+    }
+    // Raised-cosine pulse shape (simplified)
+    const t = symbolPhase / samplesPerSymbol;
+    const pulse = 0.5 * (1 - Math.cos(2 * Math.PI * t));
+
+    data[i] = (currentSymbolI * Math.cos(phase) + currentSymbolQ * Math.sin(phase)) * pulse;
+    phase += carrierInc;
+
+    // Fade envelope
+    const fadeLen = 0.03 * audioCtx.sampleRate;
+    if (i < fadeLen) data[i] *= i / fadeLen;
+    else if (i > len - fadeLen) data[i] *= (len - i) / fadeLen;
+  }
+
+  const source = audioCtx.createBufferSource();
+  source.buffer = buffer;
+
+  // Bandpass to phone band
+  const bp = audioCtx.createBiquadFilter();
+  bp.type = 'bandpass';
+  bp.frequency.value = 1800;
+  bp.Q.value = 0.8;
+
+  const gain = audioCtx.createGain();
+  gain.gain.value = gainVal;
+  source.connect(bp);
+  bp.connect(gain);
+  gain.connect(masterGain);
+  trackNode(source);
   source._gainNode = gain;
   return source;
 }
 
 // ============================================================
-// DTMF Tones
+// DTMF
 // ============================================================
 
 const DTMF_FREQS = {
@@ -485,18 +680,18 @@ const DTMF_FREQS = {
 // ============================================================
 
 const PHASES = [
-  { id: 'pickup',    name: 'Off Hook',              detail: 'Taking phone off hook' },
-  { id: 'dialtone',  name: 'Dial Tone',             detail: '350 Hz + 440 Hz continuous' },
-  { id: 'dialing',   name: 'DTMF Dialing',          detail: 'Dual-tone multi-frequency digits' },
-  { id: 'ringing',   name: 'Ringback',              detail: '440 Hz + 480 Hz, 2s on / 4s off' },
-  { id: 'answer',    name: 'Answer Tone (CED)',      detail: '2100 Hz for 3.3s (V.25)' },
-  { id: 'v8cm',      name: 'V.8 Originate (CM)',     detail: 'Calling menu signal' },
-  { id: 'v8jm',      name: 'V.8 Answer (JM)',        detail: 'Joint menu acknowledgement' },
-  { id: 'carrier',   name: 'Carrier Exchange',       detail: 'Initial carrier tones' },
-  { id: 'probing',   name: 'Line Probing',           detail: 'Frequency sweeps to measure channel' },
-  { id: 'training',  name: 'Equalizer Training',     detail: 'Scrambled training sequences' },
-  { id: 'negotiate', name: 'Rate Negotiation',       detail: 'Agreeing on symbol rate & speed' },
-  { id: 'connect',   name: 'Connected',              detail: 'Data mode established' },
+  { id: 'pickup',    name: 'Off Hook',                 detail: 'Taking phone off hook' },
+  { id: 'dialtone',  name: 'Dial Tone',                detail: '350 Hz + 440 Hz continuous' },
+  { id: 'dialing',   name: 'DTMF Dialing',             detail: 'Dual-tone multi-frequency digits' },
+  { id: 'ringing',   name: 'Ringback',                 detail: '440 Hz + 480 Hz, 2s on / 4s off' },
+  { id: 'answer',    name: 'ANSam Tone',               detail: '2100 Hz + 15 Hz AM, phase reversals every 450ms (V.8)' },
+  { id: 'v8cm',      name: 'V.8 Originate (CM)',       detail: 'V.21 FSK, mark 1650 Hz / space 1850 Hz, 300 baud' },
+  { id: 'v8jm',      name: 'V.8 Answer (JM)',          detail: 'V.21 FSK, mark 1850 Hz / space 1650 Hz, 300 baud' },
+  { id: 'carrier',   name: 'Carrier Exchange',         detail: 'Initial carrier tones at 1200/2400 Hz' },
+  { id: 'probing',   name: 'Line Probing (V.34 Ph.2)', detail: '21 tones at 150 Hz spacing, 150–3300 Hz' },
+  { id: 'training',  name: 'Equalizer Training',       detail: 'Scrambled PRBS at symbol rate, QAM-shaped' },
+  { id: 'negotiate', name: 'Rate Negotiation',         detail: 'Parameter exchange and final rate selection' },
+  { id: 'connect',   name: 'Connected',                detail: 'Data mode established' },
 ];
 
 function buildTimeline() {
@@ -512,6 +707,7 @@ function buildTimeline() {
 }
 
 function setPhase(phaseId) {
+  currentPhaseId = phaseId;
   const phase = PHASES.find(p => p.id === phaseId);
   if (!phase) return;
   document.getElementById('phase-name').textContent = phase.name;
@@ -546,7 +742,7 @@ function addLog(msg, highlight = false) {
 }
 
 // ============================================================
-// Utility: sleep that respects abort
+// Sleep (abort-aware)
 // ============================================================
 
 function sleep(ms) {
@@ -570,12 +766,15 @@ async function runHandshake() {
 
   startTime = audioCtx.currentTime;
 
-  // Start persistent line noise
-  const lineNoise = createLineNoise(0.04);
+  // Persistent line impairments
+  const lineNoise = createLineNoise(0.05);
   lineNoise.start();
+  const humOscs = create60HzHum(0.015);
+  const impulseNoise = createImpulseNoise(60, 0.06);
+  impulseNoise.start();
 
   try {
-    // Phase 1: Off Hook
+    // --- Off Hook ---
     setPhase('pickup');
     addLog('ATZ');
     addLog('OK');
@@ -583,180 +782,197 @@ async function runHandshake() {
     addLog(`ATD${phoneNumber}`);
     await sleep(200);
 
-    // Phase 2: Dial Tone (~0.5s)
+    // --- Dial Tone (350 + 440 Hz, ~1s) ---
     setPhase('dialtone');
     setStat('freq', '350 + 440 Hz');
+    setStat('level', '-13 dBm');
     const dt1 = createOsc(350, 'sine', 0.15);
     const dt2 = createOsc(440, 'sine', 0.15);
     dt1.start(); dt2.start();
-    await sleep(800);
+    await sleep(900);
     dt1.stop(); dt2.stop();
-    await sleep(80);
+    await sleep(60);
 
-    // Phase 3: DTMF Dialing
+    // --- DTMF Dialing (70ms tone, 70ms gap per digit) ---
     setPhase('dialing');
     for (const digit of phoneNumber) {
       const freqs = DTMF_FREQS[digit];
       if (!freqs) continue;
       setStat('freq', `${freqs[0]} + ${freqs[1]} Hz`);
-      const o1 = createOsc(freqs[0], 'sine', 0.15);
-      const o2 = createOsc(freqs[1], 'sine', 0.15);
+      const o1 = createOsc(freqs[0], 'sine', 0.14);
+      const o2 = createOsc(freqs[1], 'sine', 0.14);
       o1.start(); o2.start();
-      await sleep(100);
+      await sleep(70);
       o1.stop(); o2.stop();
-      await sleep(60);
+      await sleep(70);
     }
     addLog('Dialing complete');
-    await sleep(400);
+    await sleep(500);
 
-    // Phase 4: Ringback (1-2 rings)
+    // --- Ringback (440 + 480 Hz, 2s on / 4s off) ---
     setPhase('ringing');
     setStat('freq', '440 + 480 Hz');
+    setStat('level', '-19 dBm');
     const rings = 1 + Math.floor(Math.random() * 2);
     for (let i = 0; i < rings; i++) {
-      const r1 = createOsc(440, 'sine', 0.12);
-      const r2 = createOsc(480, 'sine', 0.12);
+      const r1 = createOsc(440, 'sine', 0.1);
+      const r2 = createOsc(480, 'sine', 0.1);
       r1.start(); r2.start();
       await sleep(2000);
       r1.stop(); r2.stop();
       if (i < rings - 1) await sleep(4000);
     }
-    addLog('Remote pickup detected');
+    addLog('Remote pickup');
     await sleep(300);
 
-    // Phase 5: Answer Tone (CED) — 2100 Hz for ~3.3s
+    // --- ANSam Tone (2100 Hz + 15 Hz AM, phase reversals, ~3.3s) ---
     setPhase('answer');
-    setStat('freq', '2100 Hz');
-    addLog('CED: 2100 Hz answer tone');
-    const ced = createOsc(2100, 'sine', 0.25);
-    ced.start();
+    setStat('freq', '2100 Hz (AM 15 Hz)');
+    setStat('level', '-12 dBm');
+    addLog('ANSam: 2100 Hz + 15 Hz AM');
+    addLog('Phase reversals @ 450ms');
+    const ansam = createANSam(3.3, 0.22);
+    ansam.start();
     await sleep(3300);
-    ced.stop();
+    ansam.stop();
     await sleep(200);
 
-    // Phase 6: V.8 CM (Calling Menu)
+    // --- V.8 CM (Calling Menu) — V.21 ch2 FSK ---
     setPhase('v8cm');
-    setStat('freq', 'V.8 CM modulated');
-    addLog('V.8 CM signal');
-    // CM signal: sequences of tones around 1800Hz with phase reversals
-    const cm = createOsc(1800, 'sine', 0.2);
+    setStat('freq', '1650/1850 Hz FSK');
+    setStat('level', '-10 dBm');
+    addLog('V.8 CM: calling menu');
+    // CM bit pattern: preamble + capability octets (simplified)
+    const cmBits = [];
+    for (let i = 0; i < 30; i++) cmBits.push(i % 2);  // preamble alternating
+    for (let i = 0; i < 24; i++) cmBits.push(Math.round(Math.random())); // capability data
+    const cm = createV21FSK(cmBits, 1650, 1850, 300, 0.2);
     cm.start();
-    // Simulate phase reversals with rapid frequency shifts
-    for (let i = 0; i < 6; i++) {
-      cm.frequency.setValueAtTime(1800, audioCtx.currentTime);
-      await sleep(50);
-      cm.frequency.setValueAtTime(1200, audioCtx.currentTime);
-      await sleep(50);
-    }
+    await sleep(cmBits.length / 300 * 1000);
     cm.stop();
-    await sleep(150);
+    await sleep(100);
 
-    // Phase 7: V.8 JM (Joint Menu)
+    // --- V.8 JM (Joint Menu) — V.21 reverse channel FSK ---
     setPhase('v8jm');
-    setStat('freq', 'V.8 JM modulated');
-    addLog('V.8 JM response');
-    const jm = createOsc(1600, 'sine', 0.2);
+    setStat('freq', '1850/1650 Hz FSK');
+    addLog('V.8 JM: joint menu ack');
+    const jmBits = [];
+    for (let i = 0; i < 20; i++) jmBits.push(i % 2);
+    for (let i = 0; i < 16; i++) jmBits.push(Math.round(Math.random()));
+    const jm = createV21FSK(jmBits, 1850, 1650, 300, 0.2);
     jm.start();
-    for (let i = 0; i < 6; i++) {
-      jm.frequency.setValueAtTime(1600, audioCtx.currentTime);
-      await sleep(50);
-      jm.frequency.setValueAtTime(2000, audioCtx.currentTime);
-      await sleep(50);
-    }
+    await sleep(jmBits.length / 300 * 1000);
     jm.stop();
     await sleep(200);
 
-    // Phase 8: Carrier Exchange — the screech
+    // --- Carrier Exchange ---
     setPhase('carrier');
     setStat('freq', '1200 / 2400 Hz');
+    setStat('level', '-10 dBm');
     addLog('Carrier exchange');
-    const c1 = createOsc(1200, 'sine', 0.2);
-    const c2 = createOsc(2400, 'sine', 0.15);
-    const carrierNoise = createFilteredNoise(3, 1800, 2, 0.08);
-    c1.start(); c2.start(); carrierNoise.start();
-    await sleep(1500);
-    // Frequency shifts as modems negotiate
-    c1.frequency.linearRampToValueAtTime(1650, audioCtx.currentTime + 0.5);
-    c2.frequency.linearRampToValueAtTime(1950, audioCtx.currentTime + 0.5);
-    await sleep(1000);
-    c1.stop(); c2.stop(); carrierNoise.stop();
-    await sleep(200);
 
-    // Phase 9: Line Probing — frequency sweeps
+    // Calling modem: 1200 Hz  /  Answer modem: 2400 Hz
+    const c1 = createOsc(1200, 'sine', 0.18);
+    const c2 = createOsc(2400, 'sine', 0.14);
+    const carrierNoise = createFilteredNoise(3, 1800, 1.5, 0.06);
+    c1.start(); c2.start(); carrierNoise.start();
+    await sleep(1200);
+    // Frequency convergence as modems lock
+    c1.frequency.linearRampToValueAtTime(1600, audioCtx.currentTime + 0.8);
+    c2.frequency.linearRampToValueAtTime(2000, audioCtx.currentTime + 0.8);
+    await sleep(1200);
+    c1.stop(); c2.stop(); carrierNoise.stop();
+    await sleep(150);
+
+    // --- V.34 Phase 2: Line Probing ---
     setPhase('probing');
-    setStat('freq', '150–3400 Hz sweep');
-    addLog('Line probing (channel measurement)');
-    const probe = createOsc(150, 'sine', 0.18);
-    probe.start();
-    // Sweep up through the phone band
-    probe.frequency.exponentialRampToValueAtTime(3400, audioCtx.currentTime + 1.5);
-    await sleep(1500);
-    // Sweep back down
-    probe.frequency.exponentialRampToValueAtTime(150, audioCtx.currentTime + 1.0);
+    setStat('freq', '150–3300 Hz (21 tones)');
+    addLog('L1 probe: 21 tones (150 Hz spacing)');
+
+    // L1 probing signal — all 21 tones simultaneously
+    const l1 = createV34Probing(1.0, 0.14);
+    l1.start();
     await sleep(1000);
-    probe.stop();
+    l1.stop();
     await sleep(100);
 
-    // Second probe with multi-tone
-    const probes = [600, 1200, 1800, 2400, 3000].map(f => createOsc(f, 'sine', 0.06));
-    probes.forEach(p => p.start());
-    await sleep(800);
-    probes.forEach(p => p.stop());
-    await sleep(200);
+    // L2 probing signal (second direction)
+    addLog('L2 probe: reverse direction');
+    const l2 = createV34Probing(1.0, 0.14);
+    l2.start();
+    await sleep(1000);
+    l2.stop();
+    await sleep(100);
 
-    // Phase 10: Equalizer Training — the "waterfall" scrambled sound
-    setPhase('training');
-    setStat('freq', 'Scrambled training');
-    addLog('Equalizer training');
-    const trainNoise = createFilteredNoise(4, 1800, 0.5, 0.15);
-    const trainTone = createOsc(1800, 'sine', 0.1);
-    trainNoise.start(); trainTone.start();
-    // Modulate the center frequency to create the characteristic sound
-    for (let i = 0; i < 20; i++) {
-      const f = 1200 + Math.random() * 1200;
-      trainTone.frequency.setValueAtTime(f, audioCtx.currentTime);
-      await sleep(150);
+    // Single-tone probes at band edges to measure rolloff
+    addLog('Band-edge probing');
+    const edgeTones = [300, 3300];
+    for (const freq of edgeTones) {
+      const probe = createOsc(freq, 'sine', 0.12);
+      probe.start();
+      await sleep(300);
+      probe.stop();
+      await sleep(50);
     }
-    trainNoise.stop(); trainTone.stop();
+    await sleep(100);
+
+    // --- Equalizer Training (PRBS at symbol rate) ---
+    setPhase('training');
+    const symbolRates = { 'v22': 600, 'v32': 2400, 'v34': 3429, 'v90': 8000 };
+    const symRate = symbolRates[protocol];
+    setStat('freq', `PRBS @ ${symRate} baud`);
+    setStat('baud', symRate + ' baud');
+    addLog(`Training: ${symRate} baud PRBS-15`);
+    addLog('QAM constellation mapping');
+
+    // Originate training
+    const train1 = createTrainingSignal(2.5, symRate, 0.16);
+    train1.start();
+    await sleep(2500);
+    train1.stop();
+    await sleep(100);
+
+    // Answer training (slightly different character)
+    addLog('Reverse training');
+    const train2 = createTrainingSignal(2.0, symRate, 0.14);
+    train2.start();
+    await sleep(2000);
+    train2.stop();
     await sleep(200);
 
-    // Phase 11: Rate Negotiation
+    // --- Rate Negotiation ---
     setPhase('negotiate');
     addLog('Rate negotiation');
-    const speedMap = {
-      'v22': '2400', 'v32': '14400', 'v34': '33600', 'v90': '53333'
-    };
-    const baudMap = {
-      'v22': '600', 'v32': '2400', 'v34': '3429', 'v90': '8000'
-    };
 
-    // Short burst of tones indicating agreement
-    const neg1 = createOsc(1200, 'sine', 0.1);
-    const neg2 = createOsc(2400, 'sine', 0.1);
+    const speedMap = { 'v22': 2400, 'v32': 14400, 'v34': 33600, 'v90': 53333 };
+
+    // Short INFO exchange
+    const neg1 = createOsc(1200, 'sine', 0.08);
+    const neg2 = createOsc(2400, 'sine', 0.06);
     neg1.start(); neg2.start();
-    await sleep(500);
+    await sleep(400);
     neg1.stop(); neg2.stop();
-    await sleep(100);
+    await sleep(80);
 
-    setStat('baud', baudMap[protocol] + ' baud');
+    // Final rate depends on line quality
+    let speed = speedMap[protocol];
+    if (quality < 0.3) speed = Math.round(speed * 0.5);
+    else if (quality < 0.6) speed = Math.round(speed * 0.75);
+    else if (quality < 0.85) speed = Math.round(speed * 0.9);
 
-    // Adjust final speed based on line quality
-    let speed = parseInt(speedMap[protocol]);
-    if (quality < 0.5) speed = Math.round(speed * 0.6);
-    else if (quality < 0.8) speed = Math.round(speed * 0.85);
     setStat('speed', speed + ' bps');
+    setStat('snr', Math.round(15 + quality * 35) + ' dB');
 
-    // Phase 12: Connected
+    // --- Connected ---
     setPhase('connect');
     addLog(`CONNECT ${speed}`, true);
     addLog(`Protocol: ${protocol.toUpperCase()}`);
-    setStat('snr', Math.round(20 + quality * 30) + ' dB');
+    addLog(`SNR: ${Math.round(15 + quality * 35)} dB`);
 
-    // Silence — just line noise remains
-    await sleep(2000);
+    await sleep(1500);
 
-    // Gentle data sounds (very quiet modulated noise)
-    const dataNoise = createFilteredNoise(60, 1800, 1, 0.02 * (1 - quality * 0.5));
+    // Quiet data-mode noise
+    const dataNoise = createFilteredNoise(120, 1800, 0.8, 0.015 * (1 - quality * 0.6));
     dataNoise.start();
 
   } catch (e) {
@@ -768,21 +984,26 @@ async function runHandshake() {
 // Visualization
 // ============================================================
 
-let spectrogramData = null;
+let spectrogramImageData = null;
 let spectrogramX = 0;
+let peakHold = null;
+let peakDecay = 0.995;
+let phaseMarkers = [];
 
 function initViz() {
   resizeCanvases();
-  spectrogramData = null;
+  spectrogramImageData = null;
   spectrogramX = 0;
+  peakHold = null;
+  phaseMarkers = [];
 }
 
 function resizeCanvases() {
   ['waveform', 'spectrum', 'spectrogram'].forEach(id => {
     const canvas = document.getElementById(id);
     const rect = canvas.parentElement.getBoundingClientRect();
-    canvas.width = rect.width * devicePixelRatio;
-    canvas.height = rect.height * devicePixelRatio;
+    canvas.width = Math.floor(rect.width * devicePixelRatio);
+    canvas.height = Math.floor(rect.height * devicePixelRatio);
   });
 }
 
@@ -799,49 +1020,61 @@ function drawViz() {
   drawWaveform(timeDomain);
   drawSpectrum(freqDomain);
   drawSpectrogram(freqDomain);
-  updateElapsed();
+  updateStats(freqDomain, timeDomain);
 }
 
 function drawWaveform(data) {
   const canvas = document.getElementById('waveform');
   const ctx = canvas.getContext('2d');
   const w = canvas.width, h = canvas.height;
+  const dpr = devicePixelRatio;
 
   ctx.fillStyle = '#0a0a0a';
   ctx.fillRect(0, 0, w, h);
 
-  // Grid lines
+  // Horizontal grid
   ctx.strokeStyle = '#1a1a1a';
   ctx.lineWidth = 1;
-  for (let y = 0; y < h; y += h / 8) {
+  for (let i = 1; i < 8; i++) {
+    const y = (i / 8) * h;
     ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(w, y); ctx.stroke();
   }
 
-  // Waveform
-  ctx.strokeStyle = '#00ff41';
-  ctx.lineWidth = 1.5 * devicePixelRatio;
+  // Center line
+  ctx.strokeStyle = '#2a2a2a';
+  ctx.beginPath(); ctx.moveTo(0, h / 2); ctx.lineTo(w, h / 2); ctx.stroke();
+
+  // dB scale labels on left
+  ctx.fillStyle = '#333';
+  ctx.font = `${9 * dpr}px Courier New`;
+  ctx.textAlign = 'left';
+  ctx.fillText('  0', 4 * dpr, h * 0.125 + 3 * dpr);
+  ctx.fillText(' -6', 4 * dpr, h * 0.25 + 3 * dpr);
+  ctx.fillText('-12', 4 * dpr, h * 0.375 + 3 * dpr);
+
+  // Glow layer
+  ctx.strokeStyle = 'rgba(0, 255, 65, 0.15)';
+  ctx.lineWidth = 5 * dpr;
   ctx.beginPath();
   const sliceWidth = w / data.length;
   let x = 0;
   for (let i = 0; i < data.length; i++) {
     const v = data[i] / 128.0;
     const y = (v * h) / 2;
-    if (i === 0) ctx.moveTo(x, y);
-    else ctx.lineTo(x, y);
+    if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
     x += sliceWidth;
   }
   ctx.stroke();
 
-  // Glow effect
-  ctx.strokeStyle = 'rgba(0, 255, 65, 0.3)';
-  ctx.lineWidth = 4 * devicePixelRatio;
+  // Waveform line
+  ctx.strokeStyle = '#00ff41';
+  ctx.lineWidth = 1.5 * dpr;
   ctx.beginPath();
   x = 0;
   for (let i = 0; i < data.length; i++) {
     const v = data[i] / 128.0;
     const y = (v * h) / 2;
-    if (i === 0) ctx.moveTo(x, y);
-    else ctx.lineTo(x, y);
+    if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
     x += sliceWidth;
   }
   ctx.stroke();
@@ -851,92 +1084,231 @@ function drawSpectrum(data) {
   const canvas = document.getElementById('spectrum');
   const ctx = canvas.getContext('2d');
   const w = canvas.width, h = canvas.height;
+  const dpr = devicePixelRatio;
+  const margin = 35 * dpr;
 
   ctx.fillStyle = '#0a0a0a';
   ctx.fillRect(0, 0, w, h);
 
-  // Only show 0–8kHz (relevant for modem audio)
-  const maxBin = Math.floor(8000 / (audioCtx.sampleRate / FFT_SIZE));
-  const barCount = Math.min(maxBin, 200);
-  const barWidth = w / barCount;
+  const plotW = w - margin;
+  const plotH = h - 20 * dpr;
 
-  for (let i = 0; i < barCount; i++) {
-    const binIndex = Math.floor((i / barCount) * maxBin);
-    const val = data[binIndex] / 255;
-    const barHeight = val * h;
-
-    const hue = 120; // green
-    const lightness = 20 + val * 40;
-    ctx.fillStyle = `hsl(${hue}, 100%, ${lightness}%)`;
-    ctx.fillRect(i * barWidth, h - barHeight, barWidth - 1, barHeight);
+  // dB grid lines (every 20 dB)
+  ctx.strokeStyle = '#181818';
+  ctx.lineWidth = 1;
+  ctx.fillStyle = '#333';
+  ctx.font = `${9 * dpr}px Courier New`;
+  ctx.textAlign = 'right';
+  const dbRange = analyser.maxDecibels - analyser.minDecibels; // 90 dB
+  for (let db = -20; db >= -90; db -= 20) {
+    const normDb = (db - analyser.minDecibels) / dbRange;
+    const y = plotH * (1 - normDb);
+    ctx.beginPath(); ctx.moveTo(margin, y); ctx.lineTo(w, y); ctx.stroke();
+    ctx.fillText(`${db}`, margin - 4 * dpr, y + 3 * dpr);
   }
 
-  // Frequency labels
-  ctx.fillStyle = '#444';
-  ctx.font = `${10 * devicePixelRatio}px Courier New`;
-  [500, 1000, 2000, 3000, 4000, 6000, 8000].forEach(freq => {
-    const x = (freq / 8000) * w;
-    ctx.fillText(freq >= 1000 ? (freq/1000) + 'k' : freq + '', x, h - 4);
+  const maxBin = Math.floor(MAX_DISPLAY_FREQ / (audioCtx.sampleRate / FFT_SIZE));
+
+  // Initialize peak hold
+  if (!peakHold || peakHold.length !== maxBin) {
+    peakHold = new Float32Array(maxBin);
+  }
+
+  // Filled spectrum
+  ctx.beginPath();
+  ctx.moveTo(margin, plotH);
+  for (let i = 0; i < maxBin; i++) {
+    const val = data[i] / 255;
+    const x = margin + (i / maxBin) * plotW;
+    const y = plotH * (1 - val);
+    ctx.lineTo(x, y);
+
+    // Update peak hold
+    if (val > peakHold[i]) peakHold[i] = val;
+    else peakHold[i] *= peakDecay;
+  }
+  ctx.lineTo(w, plotH);
+  ctx.closePath();
+
+  const gradient = ctx.createLinearGradient(0, 0, 0, plotH);
+  gradient.addColorStop(0, 'rgba(0, 255, 65, 0.4)');
+  gradient.addColorStop(0.5, 'rgba(0, 180, 40, 0.2)');
+  gradient.addColorStop(1, 'rgba(0, 80, 20, 0.05)');
+  ctx.fillStyle = gradient;
+  ctx.fill();
+
+  // Spectrum line
+  ctx.strokeStyle = '#00ff41';
+  ctx.lineWidth = 1.5 * dpr;
+  ctx.beginPath();
+  for (let i = 0; i < maxBin; i++) {
+    const val = data[i] / 255;
+    const x = margin + (i / maxBin) * plotW;
+    const y = plotH * (1 - val);
+    if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+  }
+  ctx.stroke();
+
+  // Peak hold dots
+  ctx.fillStyle = 'rgba(255, 200, 0, 0.6)';
+  for (let i = 0; i < maxBin; i += 2) {
+    const x = margin + (i / maxBin) * plotW;
+    const y = plotH * (1 - peakHold[i]);
+    ctx.fillRect(x - 0.5, y - 0.5, 1.5, 1.5);
+  }
+
+  // Frequency axis labels
+  ctx.fillStyle = '#555';
+  ctx.font = `${9 * dpr}px Courier New`;
+  ctx.textAlign = 'center';
+  const freqLabels = [300, 500, 1000, 1500, 2000, 2500, 3000, 3400, 4000, 5000];
+  for (const freq of freqLabels) {
+    if (freq > MAX_DISPLAY_FREQ) break;
+    const x = margin + (freq / MAX_DISPLAY_FREQ) * plotW;
+    ctx.fillText(freq >= 1000 ? (freq / 1000) + 'k' : '' + freq, x, plotH + 14 * dpr);
+  }
+
+  // Phone band markers (300–3400 Hz)
+  ctx.strokeStyle = 'rgba(255, 100, 0, 0.2)';
+  ctx.lineWidth = 1;
+  ctx.setLineDash([4, 4]);
+  [300, 3400].forEach(freq => {
+    const x = margin + (freq / MAX_DISPLAY_FREQ) * plotW;
+    ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, plotH); ctx.stroke();
   });
+  ctx.setLineDash([]);
 }
 
 function drawSpectrogram(data) {
   const canvas = document.getElementById('spectrogram');
   const ctx = canvas.getContext('2d');
   const w = canvas.width, h = canvas.height;
+  const dpr = devicePixelRatio;
+  const marginLeft = 35 * dpr;
+  const plotW = w - marginLeft;
+  const plotH = h - 16 * dpr;
 
-  if (!spectrogramData || spectrogramData.width !== w || spectrogramData.height !== h) {
+  if (!spectrogramImageData || spectrogramImageData.width !== plotW || spectrogramImageData.height !== plotH) {
+    spectrogramImageData = ctx.createImageData(plotW, plotH);
+    for (let i = 3; i < spectrogramImageData.data.length; i += 4) {
+      spectrogramImageData.data[i] = 255;
+    }
+    spectrogramX = 0;
+    phaseMarkers = [];
+    // Redraw axis background
     ctx.fillStyle = '#0a0a0a';
     ctx.fillRect(0, 0, w, h);
-    spectrogramData = ctx.getImageData(0, 0, w, h);
-    spectrogramX = 0;
   }
 
-  // Only show 0–8kHz
-  const maxBin = Math.floor(8000 / (audioCtx.sampleRate / FFT_SIZE));
+  const maxBin = Math.floor(MAX_DISPLAY_FREQ / (audioCtx.sampleRate / FFT_SIZE));
+
+  // Track phase changes for markers
+  if (phaseMarkers.length === 0 || phaseMarkers[phaseMarkers.length - 1].id !== currentPhaseId) {
+    phaseMarkers.push({ id: currentPhaseId, x: spectrogramX });
+  }
 
   // Write one column
-  for (let y = 0; y < h; y++) {
-    const binIndex = Math.floor(((h - y) / h) * maxBin);
+  for (let y = 0; y < plotH; y++) {
+    const binIndex = Math.floor(((plotH - y) / plotH) * maxBin);
     const val = data[binIndex] / 255;
 
-    // Color map: black -> dark green -> bright green -> yellow -> white
     let r, g, b;
-    if (val < 0.25) {
-      r = 0; g = Math.floor(val * 4 * 80); b = 0;
-    } else if (val < 0.5) {
-      r = 0; g = Math.floor(80 + (val - 0.25) * 4 * 175); b = 0;
-    } else if (val < 0.75) {
-      r = Math.floor((val - 0.5) * 4 * 255); g = 255; b = 0;
+    if (val < 0.15) {
+      r = 0; g = Math.floor(val / 0.15 * 40); b = Math.floor(val / 0.15 * 20);
+    } else if (val < 0.35) {
+      const t = (val - 0.15) / 0.2;
+      r = 0; g = Math.floor(40 + t * 160); b = Math.floor(20 - t * 20);
+    } else if (val < 0.6) {
+      const t = (val - 0.35) / 0.25;
+      r = Math.floor(t * 200); g = Math.floor(200 + t * 55); b = 0;
+    } else if (val < 0.8) {
+      const t = (val - 0.6) / 0.2;
+      r = Math.floor(200 + t * 55); g = 255; b = Math.floor(t * 100);
     } else {
-      r = 255; g = 255; b = Math.floor((val - 0.75) * 4 * 255);
+      const t = (val - 0.8) / 0.2;
+      r = 255; g = 255; b = Math.floor(100 + t * 155);
     }
 
-    const idx = (y * w + spectrogramX) * 4;
-    spectrogramData.data[idx] = r;
-    spectrogramData.data[idx + 1] = g;
-    spectrogramData.data[idx + 2] = b;
-    spectrogramData.data[idx + 3] = 255;
+    const idx = (y * plotW + spectrogramX) * 4;
+    spectrogramImageData.data[idx] = r;
+    spectrogramImageData.data[idx + 1] = g;
+    spectrogramImageData.data[idx + 2] = b;
   }
 
-  ctx.putImageData(spectrogramData, 0, 0);
+  // Draw spectrogram image
+  ctx.putImageData(spectrogramImageData, marginLeft, 0);
 
-  // Draw playhead
+  // Draw phase marker labels on spectrogram
+  ctx.fillStyle = '#0a0a0a';
+  ctx.fillRect(marginLeft, plotH, plotW, 16 * dpr);
+  ctx.font = `${8 * dpr}px Courier New`;
+  ctx.textAlign = 'left';
+  for (let i = 0; i < phaseMarkers.length; i++) {
+    const m = phaseMarkers[i];
+    const x = marginLeft + m.x;
+    // Tick mark
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.3)';
+    ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(x, plotH); ctx.lineTo(x, plotH + 4 * dpr); ctx.stroke();
+    // Label
+    const phase = PHASES.find(p => p.id === m.id);
+    if (phase) {
+      ctx.fillStyle = '#555';
+      const maxLabelW = (i < phaseMarkers.length - 1)
+        ? (phaseMarkers[i + 1].x - m.x)
+        : (plotW - m.x);
+      if (maxLabelW > 20 * dpr) {
+        ctx.save();
+        ctx.beginPath();
+        ctx.rect(x + 2, plotH, maxLabelW - 4, 16 * dpr);
+        ctx.clip();
+        ctx.fillText(phase.name, x + 3 * dpr, plotH + 11 * dpr);
+        ctx.restore();
+      }
+    }
+  }
+
+  // Playhead
   ctx.strokeStyle = 'rgba(255, 255, 255, 0.5)';
   ctx.lineWidth = 1;
   ctx.beginPath();
-  ctx.moveTo(spectrogramX, 0);
-  ctx.lineTo(spectrogramX, h);
+  ctx.moveTo(marginLeft + spectrogramX, 0);
+  ctx.lineTo(marginLeft + spectrogramX, plotH);
   ctx.stroke();
 
-  spectrogramX = (spectrogramX + 1) % w;
+  // Frequency axis (left margin)
+  ctx.fillStyle = '#0a0a0a';
+  ctx.fillRect(0, 0, marginLeft, h);
+  ctx.fillStyle = '#444';
+  ctx.font = `${9 * dpr}px Courier New`;
+  ctx.textAlign = 'right';
+  const freqTicks = [300, 1000, 2000, 3000, 4000, 5000];
+  for (const freq of freqTicks) {
+    if (freq > MAX_DISPLAY_FREQ) break;
+    const y = plotH * (1 - freq / MAX_DISPLAY_FREQ);
+    ctx.fillText(freq >= 1000 ? (freq / 1000) + 'k' : '' + freq, marginLeft - 4 * dpr, y + 3 * dpr);
+    ctx.strokeStyle = '#1a1a1a';
+    ctx.beginPath(); ctx.moveTo(marginLeft - 2, y); ctx.lineTo(marginLeft, y); ctx.stroke();
+  }
+
+  spectrogramX = (spectrogramX + 1) % plotW;
 }
 
-function updateElapsed() {
-  if (handshakeRunning) {
-    const elapsed = audioCtx.currentTime - startTime;
-    setStat('elapsed', elapsed.toFixed(1) + 's');
+function updateStats(freqData, timeData) {
+  if (!handshakeRunning) return;
+
+  const elapsed = audioCtx.currentTime - startTime;
+  setStat('elapsed', elapsed.toFixed(1) + 's');
+
+  // RMS level
+  let sumSq = 0;
+  for (let i = 0; i < timeData.length; i++) {
+    const v = (timeData[i] - 128) / 128;
+    sumSq += v * v;
   }
+  const rms = Math.sqrt(sumSq / timeData.length);
+  const dbLevel = rms > 0 ? (20 * Math.log10(rms)).toFixed(1) : '-inf';
+  setStat('level', dbLevel + ' dB');
 }
 
 // ============================================================
@@ -959,9 +1331,7 @@ async function startHandshake() {
   initViz();
   drawViz();
 
-  let abortResolve;
-  const abortPromise = new Promise((_, reject) => { abortResolve = reject; });
-  handshakeAbort = () => abortResolve(new Error('abort'));
+  handshakeAbort = () => {};
 
   try {
     await runHandshake();
@@ -986,25 +1356,19 @@ function stopHandshake() {
   }
 }
 
-// Volume slider
 document.getElementById('volume').addEventListener('input', e => {
   setVolume(e.target.value / 100 * 0.8);
 });
 
-// Quality display
 document.getElementById('line-quality').addEventListener('input', e => {
   document.getElementById('quality-display').textContent = e.target.value + '%';
 });
 
-// Resize handling
 window.addEventListener('resize', () => {
-  if (handshakeRunning) {
-    spectrogramData = null;
-    resizeCanvases();
-  }
+  spectrogramImageData = null;
+  resizeCanvases();
 });
 
-// Initial setup
 buildTimeline();
 
 </script>
