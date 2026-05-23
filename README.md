@@ -1,0 +1,97 @@
+# Modem Handshake Simulator
+
+Browser-based audio simulator that recreates the sound and behavior of a dialup modem handshake using the Web Audio API. Synthesizes each phase of the connection process with accurate frequencies, modulation schemes, and timing.
+
+## Reference Data
+
+### Handshake Phases & Sources
+
+**Dial Tone (US)** — 350 Hz + 440 Hz continuous
+- Source: Precise Tone Plan (LSSGR FSD 01-02-0025), Bellcore GR-506
+
+**DTMF Dialing** — Dual-tone multi-frequency, 70ms on / 70ms off
+- Each digit is two simultaneous tones from a 4x3 matrix
+- Row frequencies: 697, 770, 852, 941 Hz
+- Column frequencies: 1209, 1336, 1477 Hz
+- Source: ITU-T Q.23, ITU-T Q.24
+- https://en.wikipedia.org/wiki/Dual-tone_multi-frequency_signaling
+
+**Ringback (US)** — 440 Hz + 480 Hz, 2s on / 4s off cadence
+- Source: Bellcore GR-506
+
+**ANSam Tone** — 2100 Hz carrier, 15 Hz amplitude modulation, phase reversals every 450ms
+- The answering modem's first signal; disables echo cancellers on the line
+- AM creates sidebands at 2085 and 2115 Hz
+- Phase reversals prevent echo canceller re-engagement
+- Source: ITU-T V.8 (Section 5.2.1), ITU-T V.25
+- https://www.itu.int/rec/T-REC-V.8
+- https://en.wikipedia.org/wiki/V.8
+
+**V.8 CM/JM Signals** — V.21 channel 2 FSK modulation at 300 baud
+- CM (Calling Menu): mark 1650 Hz, space 1850 Hz — originating modem advertises capabilities
+- JM (Joint Menu): mark 1850 Hz, space 1650 Hz — answering modem acknowledges
+- Source: ITU-T V.8, ITU-T V.21
+- https://www.itu.int/rec/T-REC-V.21
+
+**Carrier Exchange** — Initial carrier tones at 1200/2400 Hz
+- Calling modem transmits 1200 Hz, answering modem transmits 2400 Hz
+- Frequencies converge as modems achieve carrier lock
+- Source: ITU-T V.22bis (for lower speeds), ITU-T V.34
+
+**V.34 Line Probing (Phase 2)** — 21 simultaneous tones at 150 Hz spacing (150–3300 Hz)
+- L1 and L2 probing signals sent in each direction
+- Measures channel frequency response, signal-to-noise ratio, and group delay
+- Band-edge probes at 300 and 3300 Hz measure rolloff characteristics
+- Source: ITU-T V.34 (Section 7, Phase 2)
+- https://www.itu.int/rec/T-REC-V.34
+- https://en.wikipedia.org/wiki/V.34
+
+**Equalizer Training** — Scrambled PRBS-15 at the negotiated symbol rate
+- Uses a 15-bit linear feedback shift register (taps at bits 14 and 13)
+- Modulated as QAM onto a 1800 Hz carrier with raised-cosine pulse shaping
+- Symbol rates: 600 (V.22bis), 2400 (V.32bis), 3429 (V.34), 8000 (V.90)
+- Creates the characteristic "waterfall" sound
+- Source: ITU-T V.34 (Section 7, Phase 3)
+
+**Rate Negotiation** — Parameter exchange for final connection speed
+- Source: ITU-T V.34 (Section 7, Phase 4)
+
+### Line Impairments
+
+**60 Hz Hum** — Power line coupling with 2nd/3rd harmonics (120, 180 Hz)
+- Amplitude scales inversely with line quality
+
+**Impulse Noise** — Random short bursts (crackle/pops) with exponential decay
+- Rate increases as line quality decreases
+
+**Telephone Band Noise** — White noise bandpass filtered to 300–3400 Hz
+- Models the PSTN voice channel bandwidth
+
+### Protocol Specifications
+
+| Protocol | ITU Standard | Max Speed | Symbol Rate | Year |
+|----------|-------------|-----------|-------------|------|
+| V.22bis  | ITU-T V.22bis | 2,400 bps | 600 baud | 1984 |
+| V.32bis  | ITU-T V.32bis | 14,400 bps | 2,400 baud | 1991 |
+| V.34     | ITU-T V.34   | 33,600 bps | 3,429 baud | 1994 |
+| V.90     | ITU-T V.90   | 56,000 bps | 8,000 baud | 1998 |
+
+### Key References
+
+- ITU-T V.8: https://www.itu.int/rec/T-REC-V.8
+- ITU-T V.21: https://www.itu.int/rec/T-REC-V.21
+- ITU-T V.34: https://www.itu.int/rec/T-REC-V.34
+- ITU-T V.90: https://www.itu.int/rec/T-REC-V.90
+- DTMF: https://en.wikipedia.org/wiki/Dual-tone_multi-frequency_signaling
+- V.34 protocol walkthrough: https://en.wikipedia.org/wiki/V.34
+- Modem sounds explained: https://oona.windytan.com/posters/dialup-final.png (Windytan's spectrogram poster)
+- Web Audio API: https://developer.mozilla.org/en-US/docs/Web/API/Web_Audio_API
+
+### Accuracy Notes
+
+The simulator aims for faithful reproduction of the frequencies, modulation schemes, and timing described in the ITU standards. Known simplifications:
+
+- V.8 CM/JM bit patterns are simplified (correct modulation, approximate data)
+- V.34 probing uses equal-amplitude tones (real probing has specific amplitude/phase relationships per ITU-T V.34 Table 2)
+- Training uses BPSK-equivalent QAM (real V.34 uses higher-order constellations: 4-QAM through 1664-QAM)
+- Phase timing is approximate (real timing depends on line conditions and modem firmware)
