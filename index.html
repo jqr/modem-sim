@@ -357,6 +357,7 @@ let skipBudget = 0;
 const FFT_SIZE = 4096;
 const SAMPLE_RATE = 44100;
 const MAX_DISPLAY_FREQ = 5000;
+const MS_PER_PIXEL = 1000 / 60;
 
 function initAudio() {
   if (audioCtx) return;
@@ -712,7 +713,7 @@ function buildTimeline() {
     el.textContent = p.name;
     el.addEventListener('mouseenter', () => setHoveredPhase(p.id));
     el.addEventListener('mouseleave', () => setHoveredPhase(null));
-    el.addEventListener('click', () => jumpToPhase(p.id));
+    el.addEventListener('click', () => simulateToPhase(p.id));
     container.appendChild(el);
   });
 }
@@ -812,12 +813,20 @@ function waitIfPaused() {
   return new Promise(resolve => { pauseResolve = resolve; });
 }
 
+function advanceSpectrogramSkip(pixels) {
+  if (!spectrogramImageData) return;
+  const plotW = spectrogramImageData.width;
+  spectrogramX = (spectrogramX + pixels) % plotW;
+  if (spectrogramX > spectrogramMaxX) spectrogramMaxX = spectrogramX;
+}
+
 function sleep(ms) {
   return waitIfPaused().then(() => {
     if (skipBudget > 0) {
       const skip = Math.min(skipBudget, ms);
       skipBudget -= skip;
       ms -= skip;
+      advanceSpectrogramSkip(Math.round(skip / MS_PER_PIXEL));
       if (ms <= 0) return;
     }
     return new Promise((resolve, reject) => {
@@ -834,7 +843,7 @@ function sleep(ms) {
 // Handshake Sequence
 // ============================================================
 
-async function runHandshake(startPhaseId = null) {
+async function runHandshake(startPhaseId = null, skipToPhaseId = null) {
   const phoneNumber = document.getElementById('phone-number').value.replace(/[^0-9*#]/g, '');
   const protocol = document.getElementById('protocol').value;
   const quality = getLineQuality();
@@ -1035,6 +1044,10 @@ async function runHandshake(startPhaseId = null) {
 
   try {
     for (let i = Math.max(0, startIdx); i < phases.length; i++) {
+      if (skipToPhaseId && phases[i].id === skipToPhaseId) {
+        skipBudget = 0;
+        stopAllNodes();
+      }
       setPhase(phases[i].id);
       await phases[i].run();
     }
@@ -1047,7 +1060,6 @@ function jumpToPhase(phaseId, exactX = null) {
   if (!spectrogramImageData) return;
 
   // Determine target X and skip budget
-  const MS_PER_PIXEL = 1000 / 60;
   let targetX;
   const range = getPhaseXRange(phaseId);
   if (!range) return;
@@ -1097,6 +1109,46 @@ function jumpToPhase(phaseId, exactX = null) {
   runHandshake(phaseId).catch(e => {
     if (e.message !== 'abort') console.error(e);
   });
+}
+
+async function simulateToPhase(phaseId) {
+  initAudio();
+  if (audioCtx.state === 'suspended') await audioCtx.resume();
+
+  if (paused) {
+    paused = false;
+    if (pauseResolve) { pauseResolve(); pauseResolve = null; }
+  }
+  if (handshakeAbort) {
+    try { handshakeAbort(); } catch(e) {}
+  }
+  handshakeAbort = null;
+  stopAllNodes();
+
+  buildTimeline();
+  spectrogramX = 0;
+  spectrogramMaxX = 0;
+  phaseMarkers = [];
+  peakHold = null;
+  if (animFrameId) { cancelAnimationFrame(animFrameId); animFrameId = null; }
+  if (!spectrogramImageData) resizeCanvases();
+
+  handshakeRunning = true;
+  skipBudget = Infinity;
+  setVolume(document.getElementById('volume').value / 100 * 0.8);
+  document.getElementById('btn-dial').textContent = 'Redial';
+  document.getElementById('btn-pause').disabled = false;
+  document.getElementById('btn-pause').textContent = 'Pause';
+  document.getElementById('log-content').innerHTML = '';
+
+  handshakeAbort = () => {};
+  drawViz();
+
+  try {
+    await runHandshake(null, phaseId);
+  } catch (e) {
+    if (e.message !== 'abort') console.error(e);
+  }
 }
 
 // ============================================================
