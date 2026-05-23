@@ -716,6 +716,7 @@ function buildTimeline() {
     el.textContent = p.name;
     el.addEventListener('mouseenter', () => setHoveredPhase(p.id));
     el.addEventListener('mouseleave', () => setHoveredPhase(null));
+    el.addEventListener('click', () => jumpToPhase(p.id));
     container.appendChild(el);
   });
 }
@@ -829,7 +830,7 @@ function sleep(ms) {
 // Handshake Sequence
 // ============================================================
 
-async function runHandshake() {
+async function runHandshake(startPhaseId = null) {
   const phoneNumber = document.getElementById('phone-number').value.replace(/[^0-9*#]/g, '');
   const protocol = document.getElementById('protocol').value;
   const quality = getLineQuality();
@@ -843,211 +844,251 @@ async function runHandshake() {
   const impulseNoise = createImpulseNoise(60, 0.06);
   impulseNoise.start();
 
-  try {
-    // --- Off Hook ---
-    setPhase('pickup');
-    addLog('ATZ');
-    addLog('OK');
-    await sleep(300);
-    addLog(`ATD${phoneNumber}`);
-    await sleep(200);
-
-    // --- Dial Tone (350 + 440 Hz, ~1s) ---
-    setPhase('dialtone');
-    setStat('freq', '350 + 440 Hz');
-    setStat('level', '-13 dBm');
-    const dt1 = createOsc(350, 'sine', 0.15);
-    const dt2 = createOsc(440, 'sine', 0.15);
-    dt1.start(); dt2.start();
-    await sleep(900);
-    dt1.stop(); dt2.stop();
-    await sleep(60);
-
-    // --- DTMF Dialing (70ms tone, 70ms gap per digit) ---
-    setPhase('dialing');
-    for (const digit of phoneNumber) {
-      const freqs = DTMF_FREQS[digit];
-      if (!freqs) continue;
-      setStat('freq', `${freqs[0]} + ${freqs[1]} Hz`);
-      const o1 = createOsc(freqs[0], 'sine', 0.14);
-      const o2 = createOsc(freqs[1], 'sine', 0.14);
-      o1.start(); o2.start();
-      await sleep(70);
-      o1.stop(); o2.stop();
-      await sleep(70);
-    }
-    addLog('Dialing complete');
-    await sleep(500);
-
-    // --- Ringback (440 + 480 Hz, 2s on / 4s off) ---
-    setPhase('ringing');
-    setStat('freq', '440 + 480 Hz');
-    setStat('level', '-19 dBm');
-    const rings = 1 + Math.floor(Math.random() * 2);
-    for (let i = 0; i < rings; i++) {
-      const r1 = createOsc(440, 'sine', 0.1);
-      const r2 = createOsc(480, 'sine', 0.1);
-      r1.start(); r2.start();
-      await sleep(2000);
-      r1.stop(); r2.stop();
-      if (i < rings - 1) await sleep(4000);
-    }
-    addLog('Remote pickup');
-    await sleep(300);
-
-    // --- ANSam Tone (2100 Hz + 15 Hz AM, phase reversals, ~3.3s) ---
-    setPhase('answer');
-    setStat('freq', '2100 Hz (AM 15 Hz)');
-    setStat('level', '-12 dBm');
-    addLog('ANSam: 2100 Hz + 15 Hz AM');
-    addLog('Phase reversals @ 450ms');
-    const ansam = createANSam(3.3, 0.22);
-    ansam.start();
-    await sleep(3300);
-    ansam.stop();
-    await sleep(200);
-
-    // --- V.8 CM (Calling Menu) — V.21 ch2 FSK ---
-    setPhase('v8cm');
-    setStat('freq', '1650/1850 Hz FSK');
-    setStat('level', '-10 dBm');
-    addLog('V.8 CM: calling menu');
-    // CM bit pattern: preamble + capability octets (simplified)
-    const cmBits = [];
-    for (let i = 0; i < 30; i++) cmBits.push(i % 2);  // preamble alternating
-    for (let i = 0; i < 24; i++) cmBits.push(Math.round(Math.random())); // capability data
-    const cm = createV21FSK(cmBits, 1650, 1850, 300, 0.2);
-    cm.start();
-    await sleep(cmBits.length / 300 * 1000);
-    cm.stop();
-    await sleep(100);
-
-    // --- V.8 JM (Joint Menu) — V.21 reverse channel FSK ---
-    setPhase('v8jm');
-    setStat('freq', '1850/1650 Hz FSK');
-    addLog('V.8 JM: joint menu ack');
-    const jmBits = [];
-    for (let i = 0; i < 20; i++) jmBits.push(i % 2);
-    for (let i = 0; i < 16; i++) jmBits.push(Math.round(Math.random()));
-    const jm = createV21FSK(jmBits, 1850, 1650, 300, 0.2);
-    jm.start();
-    await sleep(jmBits.length / 300 * 1000);
-    jm.stop();
-    await sleep(200);
-
-    // --- Carrier Exchange ---
-    setPhase('carrier');
-    setStat('freq', '1200 / 2400 Hz');
-    setStat('level', '-10 dBm');
-    addLog('Carrier exchange');
-
-    // Calling modem: 1200 Hz  /  Answer modem: 2400 Hz
-    const c1 = createOsc(1200, 'sine', 0.18);
-    const c2 = createOsc(2400, 'sine', 0.14);
-    const carrierNoise = createFilteredNoise(3, 1800, 1.5, 0.06);
-    c1.start(); c2.start(); carrierNoise.start();
-    await sleep(1200);
-    // Frequency convergence as modems lock
-    c1.frequency.linearRampToValueAtTime(1600, audioCtx.currentTime + 0.8);
-    c2.frequency.linearRampToValueAtTime(2000, audioCtx.currentTime + 0.8);
-    await sleep(1200);
-    c1.stop(); c2.stop(); carrierNoise.stop();
-    await sleep(150);
-
-    // --- V.34 Phase 2: Line Probing ---
-    setPhase('probing');
-    setStat('freq', '150–3300 Hz (21 tones)');
-    addLog('L1 probe: 21 tones (150 Hz spacing)');
-
-    // L1 probing signal — all 21 tones simultaneously
-    const l1 = createV34Probing(1.0, 0.14);
-    l1.start();
-    await sleep(1000);
-    l1.stop();
-    await sleep(100);
-
-    // L2 probing signal (second direction)
-    addLog('L2 probe: reverse direction');
-    const l2 = createV34Probing(1.0, 0.14);
-    l2.start();
-    await sleep(1000);
-    l2.stop();
-    await sleep(100);
-
-    // Single-tone probes at band edges to measure rolloff
-    addLog('Band-edge probing');
-    const edgeTones = [300, 3300];
-    for (const freq of edgeTones) {
-      const probe = createOsc(freq, 'sine', 0.12);
-      probe.start();
+  const phases = [
+    { id: 'pickup', run: async () => {
+      addLog('ATZ');
+      addLog('OK');
       await sleep(300);
-      probe.stop();
-      await sleep(50);
+      addLog(`ATD${phoneNumber}`);
+      await sleep(200);
+    }},
+
+    { id: 'dialtone', run: async () => {
+      setStat('freq', '350 + 440 Hz');
+      setStat('level', '-13 dBm');
+      const dt1 = createOsc(350, 'sine', 0.15);
+      const dt2 = createOsc(440, 'sine', 0.15);
+      dt1.start(); dt2.start();
+      await sleep(900);
+      dt1.stop(); dt2.stop();
+      await sleep(60);
+    }},
+
+    { id: 'dialing', run: async () => {
+      for (const digit of phoneNumber) {
+        const freqs = DTMF_FREQS[digit];
+        if (!freqs) continue;
+        setStat('freq', `${freqs[0]} + ${freqs[1]} Hz`);
+        const o1 = createOsc(freqs[0], 'sine', 0.14);
+        const o2 = createOsc(freqs[1], 'sine', 0.14);
+        o1.start(); o2.start();
+        await sleep(70);
+        o1.stop(); o2.stop();
+        await sleep(70);
+      }
+      addLog('Dialing complete');
+      await sleep(500);
+    }},
+
+    { id: 'ringing', run: async () => {
+      setStat('freq', '440 + 480 Hz');
+      setStat('level', '-19 dBm');
+      const rings = 1 + Math.floor(Math.random() * 2);
+      for (let i = 0; i < rings; i++) {
+        const r1 = createOsc(440, 'sine', 0.1);
+        const r2 = createOsc(480, 'sine', 0.1);
+        r1.start(); r2.start();
+        await sleep(2000);
+        r1.stop(); r2.stop();
+        if (i < rings - 1) await sleep(4000);
+      }
+      addLog('Remote pickup');
+      await sleep(300);
+    }},
+
+    { id: 'answer', run: async () => {
+      setStat('freq', '2100 Hz (AM 15 Hz)');
+      setStat('level', '-12 dBm');
+      addLog('ANSam: 2100 Hz + 15 Hz AM');
+      addLog('Phase reversals @ 450ms');
+      const ansam = createANSam(3.3, 0.22);
+      ansam.start();
+      await sleep(3300);
+      ansam.stop();
+      await sleep(200);
+    }},
+
+    { id: 'v8cm', run: async () => {
+      setStat('freq', '1650/1850 Hz FSK');
+      setStat('level', '-10 dBm');
+      addLog('V.8 CM: calling menu');
+      const cmBits = [];
+      for (let i = 0; i < 30; i++) cmBits.push(i % 2);
+      for (let i = 0; i < 24; i++) cmBits.push(Math.round(Math.random()));
+      const cm = createV21FSK(cmBits, 1650, 1850, 300, 0.2);
+      cm.start();
+      await sleep(cmBits.length / 300 * 1000);
+      cm.stop();
+      await sleep(100);
+    }},
+
+    { id: 'v8jm', run: async () => {
+      setStat('freq', '1850/1650 Hz FSK');
+      addLog('V.8 JM: joint menu ack');
+      const jmBits = [];
+      for (let i = 0; i < 20; i++) jmBits.push(i % 2);
+      for (let i = 0; i < 16; i++) jmBits.push(Math.round(Math.random()));
+      const jm = createV21FSK(jmBits, 1850, 1650, 300, 0.2);
+      jm.start();
+      await sleep(jmBits.length / 300 * 1000);
+      jm.stop();
+      await sleep(200);
+    }},
+
+    { id: 'carrier', run: async () => {
+      setStat('freq', '1200 / 2400 Hz');
+      setStat('level', '-10 dBm');
+      addLog('Carrier exchange');
+      const c1 = createOsc(1200, 'sine', 0.18);
+      const c2 = createOsc(2400, 'sine', 0.14);
+      const carrierNoise = createFilteredNoise(3, 1800, 1.5, 0.06);
+      c1.start(); c2.start(); carrierNoise.start();
+      await sleep(1200);
+      c1.frequency.linearRampToValueAtTime(1600, audioCtx.currentTime + 0.8);
+      c2.frequency.linearRampToValueAtTime(2000, audioCtx.currentTime + 0.8);
+      await sleep(1200);
+      c1.stop(); c2.stop(); carrierNoise.stop();
+      await sleep(150);
+    }},
+
+    { id: 'probing', run: async () => {
+      setStat('freq', '150–3300 Hz (21 tones)');
+      addLog('L1 probe: 21 tones (150 Hz spacing)');
+      const l1 = createV34Probing(1.0, 0.14);
+      l1.start();
+      await sleep(1000);
+      l1.stop();
+      await sleep(100);
+      addLog('L2 probe: reverse direction');
+      const l2 = createV34Probing(1.0, 0.14);
+      l2.start();
+      await sleep(1000);
+      l2.stop();
+      await sleep(100);
+      addLog('Band-edge probing');
+      for (const freq of [300, 3300]) {
+        const probe = createOsc(freq, 'sine', 0.12);
+        probe.start();
+        await sleep(300);
+        probe.stop();
+        await sleep(50);
+      }
+      await sleep(100);
+    }},
+
+    { id: 'training', run: async () => {
+      const symbolRates = { 'v22': 600, 'v32': 2400, 'v34': 3429, 'v90': 8000 };
+      const symRate = symbolRates[protocol];
+      setStat('freq', `PRBS @ ${symRate} baud`);
+      setStat('baud', symRate + ' baud');
+      addLog(`Training: ${symRate} baud PRBS-15`);
+      addLog('QAM constellation mapping');
+      const train1 = createTrainingSignal(2.5, symRate, 0.16);
+      train1.start();
+      await sleep(2500);
+      train1.stop();
+      await sleep(100);
+      addLog('Reverse training');
+      const train2 = createTrainingSignal(2.0, symRate, 0.14);
+      train2.start();
+      await sleep(2000);
+      train2.stop();
+      await sleep(200);
+    }},
+
+    { id: 'negotiate', run: async () => {
+      addLog('Rate negotiation');
+      const speedMap = { 'v22': 2400, 'v32': 14400, 'v34': 33600, 'v90': 53333 };
+      const neg1 = createOsc(1200, 'sine', 0.08);
+      const neg2 = createOsc(2400, 'sine', 0.06);
+      neg1.start(); neg2.start();
+      await sleep(400);
+      neg1.stop(); neg2.stop();
+      await sleep(80);
+      let speed = speedMap[protocol];
+      if (quality < 0.3) speed = Math.round(speed * 0.5);
+      else if (quality < 0.6) speed = Math.round(speed * 0.75);
+      else if (quality < 0.85) speed = Math.round(speed * 0.9);
+      setStat('speed', speed + ' bps');
+      setStat('snr', Math.round(15 + quality * 35) + ' dB');
+    }},
+
+    { id: 'connect', run: async () => {
+      const speedMap = { 'v22': 2400, 'v32': 14400, 'v34': 33600, 'v90': 53333 };
+      let speed = speedMap[protocol];
+      if (quality < 0.3) speed = Math.round(speed * 0.5);
+      else if (quality < 0.6) speed = Math.round(speed * 0.75);
+      else if (quality < 0.85) speed = Math.round(speed * 0.9);
+      addLog(`CONNECT ${speed}`, true);
+      addLog(`Protocol: ${protocol.toUpperCase()}`);
+      addLog(`SNR: ${Math.round(15 + quality * 35)} dB`);
+      await sleep(1500);
+      const dataNoise = createFilteredNoise(120, 1800, 0.8, 0.015 * (1 - quality * 0.6));
+      dataNoise.start();
+    }},
+  ];
+
+  const startIdx = startPhaseId ? phases.findIndex(p => p.id === startPhaseId) : 0;
+
+  try {
+    for (let i = Math.max(0, startIdx); i < phases.length; i++) {
+      setPhase(phases[i].id);
+      await phases[i].run();
     }
-    await sleep(100);
-
-    // --- Equalizer Training (PRBS at symbol rate) ---
-    setPhase('training');
-    const symbolRates = { 'v22': 600, 'v32': 2400, 'v34': 3429, 'v90': 8000 };
-    const symRate = symbolRates[protocol];
-    setStat('freq', `PRBS @ ${symRate} baud`);
-    setStat('baud', symRate + ' baud');
-    addLog(`Training: ${symRate} baud PRBS-15`);
-    addLog('QAM constellation mapping');
-
-    // Originate training
-    const train1 = createTrainingSignal(2.5, symRate, 0.16);
-    train1.start();
-    await sleep(2500);
-    train1.stop();
-    await sleep(100);
-
-    // Answer training (slightly different character)
-    addLog('Reverse training');
-    const train2 = createTrainingSignal(2.0, symRate, 0.14);
-    train2.start();
-    await sleep(2000);
-    train2.stop();
-    await sleep(200);
-
-    // --- Rate Negotiation ---
-    setPhase('negotiate');
-    addLog('Rate negotiation');
-
-    const speedMap = { 'v22': 2400, 'v32': 14400, 'v34': 33600, 'v90': 53333 };
-
-    // Short INFO exchange
-    const neg1 = createOsc(1200, 'sine', 0.08);
-    const neg2 = createOsc(2400, 'sine', 0.06);
-    neg1.start(); neg2.start();
-    await sleep(400);
-    neg1.stop(); neg2.stop();
-    await sleep(80);
-
-    // Final rate depends on line quality
-    let speed = speedMap[protocol];
-    if (quality < 0.3) speed = Math.round(speed * 0.5);
-    else if (quality < 0.6) speed = Math.round(speed * 0.75);
-    else if (quality < 0.85) speed = Math.round(speed * 0.9);
-
-    setStat('speed', speed + ' bps');
-    setStat('snr', Math.round(15 + quality * 35) + ' dB');
-
-    // --- Connected ---
-    setPhase('connect');
-    addLog(`CONNECT ${speed}`, true);
-    addLog(`Protocol: ${protocol.toUpperCase()}`);
-    addLog(`SNR: ${Math.round(15 + quality * 35)} dB`);
-
-    await sleep(1500);
-
-    // Quiet data-mode noise
-    const dataNoise = createFilteredNoise(120, 1800, 0.8, 0.015 * (1 - quality * 0.6));
-    dataNoise.start();
-
   } catch (e) {
     if (e.message !== 'abort') throw e;
   }
+}
+
+function jumpToPhase(phaseId, exactX = null) {
+  if (!spectrogramImageData) return;
+
+  // Determine target X
+  let targetX;
+  if (exactX != null) {
+    targetX = Math.max(0, Math.round(exactX));
+  } else {
+    const range = getPhaseXRange(phaseId);
+    if (!range) return;
+    targetX = range.startX;
+  }
+
+  // Don't allow jumping past the furthest point reached
+  if (targetX > spectrogramMaxX) return;
+
+  // Unpause if needed
+  if (paused) {
+    paused = false;
+    if (pauseResolve) { pauseResolve(); pauseResolve = null; }
+    if (audioCtx) audioCtx.resume();
+  }
+
+  // Abort current handshake without clearing viz
+  if (handshakeAbort) {
+    try { handshakeAbort(); } catch(e) {}
+  }
+  handshakeAbort = null;
+  stopAllNodes();
+
+  spectrogramX = targetX;
+
+  // Trim markers so the replayed phases re-record from this point
+  const idx = phaseMarkers.findIndex(m => m.id === phaseId);
+  if (idx >= 0) phaseMarkers = phaseMarkers.slice(0, idx);
+
+  // Restart
+  handshakeRunning = true;
+  handshakeAbort = () => {};
+  document.getElementById('btn-dial').disabled = true;
+  document.getElementById('btn-pause').disabled = false;
+  document.getElementById('btn-pause').textContent = 'Pause';
+  document.getElementById('btn-stop').disabled = false;
+
+  if (!animFrameId) drawViz();
+
+  runHandshake(phaseId).catch(e => {
+    if (e.message !== 'abort') console.error(e);
+  });
 }
 
 // ============================================================
@@ -1056,6 +1097,7 @@ async function runHandshake() {
 
 let spectrogramImageData = null;
 let spectrogramX = 0;
+let spectrogramMaxX = 0;
 let peakHold = null;
 let peakDecay = 0.995;
 let phaseMarkers = [];
@@ -1064,6 +1106,7 @@ function initViz() {
   resizeCanvases();
   spectrogramImageData = null;
   spectrogramX = 0;
+  spectrogramMaxX = 0;
   peakHold = null;
   phaseMarkers = [];
 }
@@ -1311,6 +1354,7 @@ function drawSpectrogram(data) {
   renderSpectrogramOverlays(ctx, w, h, marginLeft, plotW, plotH, dpr);
 
   spectrogramX = (spectrogramX + 1) % plotW;
+  if (spectrogramX > spectrogramMaxX) spectrogramMaxX = spectrogramX;
 }
 
 function renderSpectrogramOverlays(ctx, w, h, marginLeft, plotW, plotH, dpr) {
@@ -1521,6 +1565,20 @@ spectrogramCanvas.addEventListener('mousemove', e => {
 spectrogramCanvas.addEventListener('mouseleave', () => {
   setHoveredPhase(null);
 });
+
+spectrogramCanvas.addEventListener('click', e => {
+  const rect = spectrogramCanvas.getBoundingClientRect();
+  const dpr = devicePixelRatio;
+  const marginLeft = 35 * dpr;
+  const cssMarginLeft = marginLeft / dpr;
+  const cssX = e.clientX - rect.left - cssMarginLeft;
+  const plotW = spectrogramCanvas.width - marginLeft;
+  const pixelX = (cssX / (rect.width - cssMarginLeft)) * plotW;
+  const phaseId = getPhaseAtX(pixelX);
+  if (phaseId) jumpToPhase(phaseId, pixelX);
+});
+
+spectrogramCanvas.style.cursor = 'crosshair';
 
 buildTimeline();
 
