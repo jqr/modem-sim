@@ -278,15 +278,11 @@ select {
 
 <div class="main">
   <div class="viz-panel">
-    <div class="viz-row">
+    <div class="viz-row" style="flex: 1">
       <span class="viz-label">Waveform</span>
       <canvas id="waveform"></canvas>
     </div>
-    <div class="viz-row">
-      <span class="viz-label">Frequency Spectrum (dB)</span>
-      <canvas id="spectrum"></canvas>
-    </div>
-    <div class="viz-row">
+    <div class="viz-row" style="flex: 2">
       <span class="viz-label">Spectrogram</span>
       <canvas id="spectrogram"></canvas>
     </div>
@@ -1022,9 +1018,8 @@ async function runHandshake(startPhaseId = null) {
       addLog(`CONNECT ${speed}`, true);
       addLog(`Protocol: ${protocol.toUpperCase()}`);
       addLog(`SNR: ${Math.round(15 + quality * 35)} dB`);
-      await sleep(1500);
-      const dataNoise = createFilteredNoise(120, 1800, 0.8, 0.015 * (1 - quality * 0.6));
-      dataNoise.start();
+      await sleep(300);
+      stopHandshake();
     }},
   ];
 
@@ -1060,7 +1055,7 @@ function jumpToPhase(phaseId, exactX = null) {
   if (paused) {
     paused = false;
     if (pauseResolve) { pauseResolve(); pauseResolve = null; }
-    if (audioCtx) audioCtx.resume();
+    setVolume(document.getElementById('volume').value / 100 * 0.8);
   }
 
   // Abort current handshake without clearing viz
@@ -1101,6 +1096,7 @@ let spectrogramMaxX = 0;
 let peakHold = null;
 let peakDecay = 0.995;
 let phaseMarkers = [];
+let lastFreqData = null;
 
 function initViz() {
   resizeCanvases();
@@ -1112,7 +1108,7 @@ function initViz() {
 }
 
 function resizeCanvases() {
-  ['waveform', 'spectrum', 'spectrogram'].forEach(id => {
+  ['waveform', 'spectrogram'].forEach(id => {
     const canvas = document.getElementById(id);
     const rect = canvas.parentElement.getBoundingClientRect();
     canvas.width = Math.floor(rect.width * devicePixelRatio);
@@ -1130,9 +1126,15 @@ function drawViz() {
   analyser.getByteTimeDomainData(timeDomain);
   analyser.getByteFrequencyData(freqDomain);
 
+  lastFreqData = freqDomain;
   drawWaveform(timeDomain);
-  drawSpectrum(freqDomain);
-  drawSpectrogram(freqDomain);
+
+  if (handshakeRunning && !paused) {
+    drawSpectrogram(freqDomain);
+  } else {
+    renderSpectrogramStatic();
+  }
+
   updateStats(freqDomain, timeDomain);
 }
 
@@ -1191,105 +1193,6 @@ function drawWaveform(data) {
     x += sliceWidth;
   }
   ctx.stroke();
-}
-
-function drawSpectrum(data) {
-  const canvas = document.getElementById('spectrum');
-  const ctx = canvas.getContext('2d');
-  const w = canvas.width, h = canvas.height;
-  const dpr = devicePixelRatio;
-  const margin = 35 * dpr;
-
-  ctx.fillStyle = '#0a0a0a';
-  ctx.fillRect(0, 0, w, h);
-
-  const plotW = w - margin;
-  const plotH = h - 20 * dpr;
-
-  // dB grid lines (every 20 dB)
-  ctx.strokeStyle = '#181818';
-  ctx.lineWidth = 1;
-  ctx.fillStyle = '#333';
-  ctx.font = `${9 * dpr}px Courier New`;
-  ctx.textAlign = 'right';
-  const dbRange = analyser.maxDecibels - analyser.minDecibels; // 90 dB
-  for (let db = -20; db >= -90; db -= 20) {
-    const normDb = (db - analyser.minDecibels) / dbRange;
-    const y = plotH * (1 - normDb);
-    ctx.beginPath(); ctx.moveTo(margin, y); ctx.lineTo(w, y); ctx.stroke();
-    ctx.fillText(`${db}`, margin - 4 * dpr, y + 3 * dpr);
-  }
-
-  const maxBin = Math.floor(MAX_DISPLAY_FREQ / (audioCtx.sampleRate / FFT_SIZE));
-
-  // Initialize peak hold
-  if (!peakHold || peakHold.length !== maxBin) {
-    peakHold = new Float32Array(maxBin);
-  }
-
-  // Filled spectrum
-  ctx.beginPath();
-  ctx.moveTo(margin, plotH);
-  for (let i = 0; i < maxBin; i++) {
-    const val = data[i] / 255;
-    const x = margin + (i / maxBin) * plotW;
-    const y = plotH * (1 - val);
-    ctx.lineTo(x, y);
-
-    // Update peak hold
-    if (val > peakHold[i]) peakHold[i] = val;
-    else peakHold[i] *= peakDecay;
-  }
-  ctx.lineTo(w, plotH);
-  ctx.closePath();
-
-  const gradient = ctx.createLinearGradient(0, 0, 0, plotH);
-  gradient.addColorStop(0, 'rgba(0, 255, 65, 0.4)');
-  gradient.addColorStop(0.5, 'rgba(0, 180, 40, 0.2)');
-  gradient.addColorStop(1, 'rgba(0, 80, 20, 0.05)');
-  ctx.fillStyle = gradient;
-  ctx.fill();
-
-  // Spectrum line
-  ctx.strokeStyle = '#00ff41';
-  ctx.lineWidth = 1.5 * dpr;
-  ctx.beginPath();
-  for (let i = 0; i < maxBin; i++) {
-    const val = data[i] / 255;
-    const x = margin + (i / maxBin) * plotW;
-    const y = plotH * (1 - val);
-    if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
-  }
-  ctx.stroke();
-
-  // Peak hold dots
-  ctx.fillStyle = 'rgba(255, 200, 0, 0.6)';
-  for (let i = 0; i < maxBin; i += 2) {
-    const x = margin + (i / maxBin) * plotW;
-    const y = plotH * (1 - peakHold[i]);
-    ctx.fillRect(x - 0.5, y - 0.5, 1.5, 1.5);
-  }
-
-  // Frequency axis labels
-  ctx.fillStyle = '#555';
-  ctx.font = `${9 * dpr}px Courier New`;
-  ctx.textAlign = 'center';
-  const freqLabels = [300, 500, 1000, 1500, 2000, 2500, 3000, 3400, 4000, 5000];
-  for (const freq of freqLabels) {
-    if (freq > MAX_DISPLAY_FREQ) break;
-    const x = margin + (freq / MAX_DISPLAY_FREQ) * plotW;
-    ctx.fillText(freq >= 1000 ? (freq / 1000) + 'k' : '' + freq, x, plotH + 14 * dpr);
-  }
-
-  // Phone band markers (300–3400 Hz)
-  ctx.strokeStyle = 'rgba(255, 100, 0, 0.2)';
-  ctx.lineWidth = 1;
-  ctx.setLineDash([4, 4]);
-  [300, 3400].forEach(freq => {
-    const x = margin + (freq / MAX_DISPLAY_FREQ) * plotW;
-    ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, plotH); ctx.stroke();
-  });
-  ctx.setLineDash([]);
 }
 
 function drawSpectrogram(data) {
@@ -1351,13 +1254,57 @@ function drawSpectrogram(data) {
   // Draw spectrogram image
   ctx.putImageData(spectrogramImageData, marginLeft, 0);
 
-  renderSpectrogramOverlays(ctx, w, h, marginLeft, plotW, plotH, dpr);
+  renderSpectrogramOverlays(ctx, w, h, marginLeft, plotW, plotH, dpr, data);
 
   spectrogramX = (spectrogramX + 1) % plotW;
   if (spectrogramX > spectrogramMaxX) spectrogramMaxX = spectrogramX;
 }
 
-function renderSpectrogramOverlays(ctx, w, h, marginLeft, plotW, plotH, dpr) {
+function renderSpectrogramOverlays(ctx, w, h, marginLeft, plotW, plotH, dpr, freqData) {
+  const maxBin = audioCtx ? Math.floor(MAX_DISPLAY_FREQ / (audioCtx.sampleRate / FFT_SIZE)) : 0;
+  const spectrumWidth = 120 * dpr;
+
+  // Phone band markers (300–3400 Hz) as horizontal dashed lines
+  ctx.strokeStyle = 'rgba(255, 100, 0, 0.15)';
+  ctx.lineWidth = 1;
+  ctx.setLineDash([4, 4]);
+  [300, 3400].forEach(freq => {
+    const y = plotH * (1 - freq / MAX_DISPLAY_FREQ);
+    ctx.beginPath(); ctx.moveTo(marginLeft, y); ctx.lineTo(w, y); ctx.stroke();
+  });
+  ctx.setLineDash([]);
+
+  // Live spectrum overlay anchored to playhead (only at the frontier)
+  const atFrontier = spectrogramX >= spectrogramMaxX - 1;
+  if (freqData && maxBin > 0 && atFrontier) {
+    if (!peakHold || peakHold.length !== maxBin) {
+      peakHold = new Float32Array(maxBin);
+    }
+
+    const baseX = marginLeft + spectrogramX;
+    const barStep = 2;
+    const barH = Math.max(1, plotH / maxBin * barStep - 1);
+
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(marginLeft, 0, plotW, plotH);
+    ctx.clip();
+
+    for (let i = 0; i < maxBin; i += barStep) {
+      const val = freqData[i] / 255;
+      const y = plotH * (1 - i / maxBin) - barH;
+      const barW = val * spectrumWidth;
+
+      if (barW > 0.5) {
+        const lightness = 20 + val * 40;
+        ctx.fillStyle = `hsla(120, 100%, ${lightness}%, 0.5)`;
+        ctx.fillRect(baseX, y, barW, barH);
+      }
+    }
+
+    ctx.restore();
+  }
+
   // Hover highlight overlay
   if (hoveredPhaseId) {
     const range = getPhaseXRange(hoveredPhaseId);
@@ -1440,7 +1387,7 @@ function renderSpectrogramStatic() {
   const plotH = h - 16 * dpr;
 
   ctx.putImageData(spectrogramImageData, marginLeft, 0);
-  renderSpectrogramOverlays(ctx, w, h, marginLeft, plotW, plotH, dpr);
+  renderSpectrogramOverlays(ctx, w, h, marginLeft, plotW, plotH, dpr, lastFreqData);
 }
 
 function updateStats(freqData, timeData) {
@@ -1497,13 +1444,9 @@ function togglePause() {
   paused = !paused;
   document.getElementById('btn-pause').textContent = paused ? 'Resume' : 'Pause';
   if (paused) {
-    audioCtx.suspend();
-    if (animFrameId) {
-      cancelAnimationFrame(animFrameId);
-      animFrameId = null;
-    }
+    masterGain.gain.setValueAtTime(0, audioCtx.currentTime);
   } else {
-    audioCtx.resume();
+    setVolume(document.getElementById('volume').value / 100 * 0.8);
     if (pauseResolve) {
       pauseResolve();
       pauseResolve = null;
@@ -1516,7 +1459,6 @@ function stopHandshake() {
   if (paused) {
     paused = false;
     if (pauseResolve) { pauseResolve(); pauseResolve = null; }
-    if (audioCtx) audioCtx.resume();
   }
   if (handshakeAbort) {
     try { handshakeAbort(); } catch(e) {}
@@ -1528,11 +1470,6 @@ function stopHandshake() {
   document.getElementById('btn-stop').disabled = true;
   document.getElementById('btn-pause').disabled = true;
   document.getElementById('btn-pause').textContent = 'Pause';
-
-  if (animFrameId) {
-    cancelAnimationFrame(animFrameId);
-    animFrameId = null;
-  }
 }
 
 document.getElementById('volume').addEventListener('input', e => {
