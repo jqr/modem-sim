@@ -175,6 +175,8 @@ select {
   padding: 3px 6px;
   color: #444;
   border-left: 2px solid #222;
+  cursor: pointer;
+  transition: background 0.1s;
 }
 
 .phase-step.active {
@@ -186,6 +188,12 @@ select {
 .phase-step.done {
   color: #666;
   border-left-color: #444;
+}
+
+.phase-step.hover {
+  background: #1a1a00;
+  color: #cccc66;
+  border-left-color: #cccc66;
 }
 
 .stats {
@@ -285,7 +293,7 @@ select {
 
   <div class="info-panel">
     <div class="phase-display">
-      <h3>Current Phase</h3>
+      <h3 id="phase-header">Current Phase</h3>
       <div class="phase-name" id="phase-name">Idle</div>
       <div class="phase-detail" id="phase-detail">Ready to dial</div>
     </div>
@@ -345,6 +353,7 @@ let handshakeAbort = null;
 let startTime = 0;
 let animFrameId = null;
 let currentPhaseId = null;
+let hoveredPhaseId = null;
 
 const FFT_SIZE = 4096;
 const SAMPLE_RATE = 44100;
@@ -702,16 +711,69 @@ function buildTimeline() {
     el.className = 'phase-step';
     el.id = 'step-' + p.id;
     el.textContent = p.name;
+    el.addEventListener('mouseenter', () => setHoveredPhase(p.id));
+    el.addEventListener('mouseleave', () => setHoveredPhase(null));
     container.appendChild(el);
   });
+}
+
+function setHoveredPhase(phaseId) {
+  if (hoveredPhaseId === phaseId) return;
+  if (hoveredPhaseId) {
+    const old = document.getElementById('step-' + hoveredPhaseId);
+    if (old) old.classList.remove('hover');
+  }
+  hoveredPhaseId = phaseId;
+  if (hoveredPhaseId) {
+    const el = document.getElementById('step-' + hoveredPhaseId);
+    if (el) el.classList.add('hover');
+    const phase = PHASES.find(p => p.id === phaseId);
+    if (phase) {
+      document.getElementById('phase-header').textContent = 'Highlighted Phase';
+      document.getElementById('phase-name').textContent = phase.name;
+      document.getElementById('phase-detail').textContent = phase.detail;
+    }
+  } else {
+    document.getElementById('phase-header').textContent = 'Current Phase';
+    const phase = PHASES.find(p => p.id === currentPhaseId);
+    if (phase) {
+      document.getElementById('phase-name').textContent = phase.name;
+      document.getElementById('phase-detail').textContent = phase.detail;
+    } else {
+      document.getElementById('phase-name').textContent = 'Idle';
+      document.getElementById('phase-detail').textContent = 'Ready to dial';
+    }
+  }
+  if (!animFrameId) renderSpectrogramStatic();
+}
+
+function getPhaseXRange(phaseId) {
+  if (!phaseMarkers.length) return null;
+  for (let i = 0; i < phaseMarkers.length; i++) {
+    if (phaseMarkers[i].id === phaseId) {
+      const startX = phaseMarkers[i].x;
+      const endX = (i + 1 < phaseMarkers.length) ? phaseMarkers[i + 1].x : spectrogramX;
+      return { startX, endX };
+    }
+  }
+  return null;
+}
+
+function getPhaseAtX(x) {
+  for (let i = phaseMarkers.length - 1; i >= 0; i--) {
+    if (x >= phaseMarkers[i].x) return phaseMarkers[i].id;
+  }
+  return null;
 }
 
 function setPhase(phaseId) {
   currentPhaseId = phaseId;
   const phase = PHASES.find(p => p.id === phaseId);
   if (!phase) return;
-  document.getElementById('phase-name').textContent = phase.name;
-  document.getElementById('phase-detail').textContent = phase.detail;
+  if (!hoveredPhaseId) {
+    document.getElementById('phase-name').textContent = phase.name;
+    document.getElementById('phase-detail').textContent = phase.detail;
+  }
 
   let found = false;
   PHASES.forEach(p => {
@@ -1238,7 +1300,31 @@ function drawSpectrogram(data) {
   // Draw spectrogram image
   ctx.putImageData(spectrogramImageData, marginLeft, 0);
 
-  // Draw phase marker labels on spectrogram
+  renderSpectrogramOverlays(ctx, w, h, marginLeft, plotW, plotH, dpr);
+
+  spectrogramX = (spectrogramX + 1) % plotW;
+}
+
+function renderSpectrogramOverlays(ctx, w, h, marginLeft, plotW, plotH, dpr) {
+  // Hover highlight overlay
+  if (hoveredPhaseId) {
+    const range = getPhaseXRange(hoveredPhaseId);
+    if (range) {
+      const x1 = marginLeft + range.startX;
+      const x2 = marginLeft + range.endX;
+      if (x2 > x1) {
+        ctx.fillStyle = 'rgba(0, 0, 0, 0.45)';
+        ctx.fillRect(marginLeft, 0, range.startX, plotH);
+        ctx.fillRect(x2, 0, plotW - range.endX, plotH);
+        ctx.strokeStyle = 'rgba(204, 204, 102, 0.7)';
+        ctx.lineWidth = 2;
+        ctx.beginPath(); ctx.moveTo(x1, 0); ctx.lineTo(x1, plotH); ctx.stroke();
+        ctx.beginPath(); ctx.moveTo(x2, 0); ctx.lineTo(x2, plotH); ctx.stroke();
+      }
+    }
+  }
+
+  // Phase marker labels
   ctx.fillStyle = '#0a0a0a';
   ctx.fillRect(marginLeft, plotH, plotW, 16 * dpr);
   ctx.font = `${8 * dpr}px Courier New`;
@@ -1246,14 +1332,12 @@ function drawSpectrogram(data) {
   for (let i = 0; i < phaseMarkers.length; i++) {
     const m = phaseMarkers[i];
     const x = marginLeft + m.x;
-    // Tick mark
-    ctx.strokeStyle = 'rgba(255, 255, 255, 0.3)';
-    ctx.lineWidth = 1;
+    const isHovered = hoveredPhaseId === m.id;
+    ctx.strokeStyle = isHovered ? 'rgba(204, 204, 102, 0.9)' : 'rgba(255, 255, 255, 0.4)';
+    ctx.lineWidth = isHovered ? 2 : 1;
     ctx.beginPath(); ctx.moveTo(x, plotH); ctx.lineTo(x, plotH + 4 * dpr); ctx.stroke();
-    // Label
     const phase = PHASES.find(p => p.id === m.id);
     if (phase) {
-      ctx.fillStyle = '#555';
       const maxLabelW = (i < phaseMarkers.length - 1)
         ? (phaseMarkers[i + 1].x - m.x)
         : (plotW - m.x);
@@ -1262,6 +1346,7 @@ function drawSpectrogram(data) {
         ctx.beginPath();
         ctx.rect(x + 2, plotH, maxLabelW - 4, 16 * dpr);
         ctx.clip();
+        ctx.fillStyle = isHovered ? '#cccc66' : '#999';
         ctx.fillText(phase.name, x + 3 * dpr, plotH + 11 * dpr);
         ctx.restore();
       }
@@ -1290,8 +1375,20 @@ function drawSpectrogram(data) {
     ctx.strokeStyle = '#1a1a1a';
     ctx.beginPath(); ctx.moveTo(marginLeft - 2, y); ctx.lineTo(marginLeft, y); ctx.stroke();
   }
+}
 
-  spectrogramX = (spectrogramX + 1) % plotW;
+function renderSpectrogramStatic() {
+  if (!spectrogramImageData) return;
+  const canvas = document.getElementById('spectrogram');
+  const ctx = canvas.getContext('2d');
+  const w = canvas.width, h = canvas.height;
+  const dpr = devicePixelRatio;
+  const marginLeft = 35 * dpr;
+  const plotW = w - marginLeft;
+  const plotH = h - 16 * dpr;
+
+  ctx.putImageData(spectrogramImageData, marginLeft, 0);
+  renderSpectrogramOverlays(ctx, w, h, marginLeft, plotW, plotH, dpr);
 }
 
 function updateStats(freqData, timeData) {
@@ -1367,6 +1464,24 @@ document.getElementById('line-quality').addEventListener('input', e => {
 window.addEventListener('resize', () => {
   spectrogramImageData = null;
   resizeCanvases();
+});
+
+// Spectrogram hover → highlight phase in timeline
+const spectrogramCanvas = document.getElementById('spectrogram');
+spectrogramCanvas.addEventListener('mousemove', e => {
+  const rect = spectrogramCanvas.getBoundingClientRect();
+  const dpr = devicePixelRatio;
+  const marginLeft = 35 * dpr;
+  const cssMarginLeft = marginLeft / dpr;
+  const cssX = e.clientX - rect.left - cssMarginLeft;
+  const plotW = spectrogramCanvas.width - marginLeft;
+  const pixelX = (cssX / (rect.width - cssMarginLeft)) * plotW;
+  const phaseId = getPhaseAtX(pixelX);
+  setHoveredPhase(phaseId);
+});
+
+spectrogramCanvas.addEventListener('mouseleave', () => {
+  setHoveredPhase(null);
 });
 
 buildTimeline();
