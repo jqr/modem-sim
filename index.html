@@ -3,7 +3,16 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Modem Handshake Simulator</title>
+<title>MODEM SIM</title>
+<meta name="description" content="Browser-based dialup modem handshake simulator with accurate audio synthesis, spectrogram visualization, and interactive phase exploration. Hear the dial tone, DTMF, ANSam, V.34 probing, and the full connection sequence.">
+<meta property="og:title" content="MODEM SIM">
+<meta property="og:description" content="Recreate the sound of a dialup modem handshake. Accurate audio synthesis of every phase from dial tone to CONNECT, with real-time spectrogram and signal analysis.">
+<meta property="og:type" content="website">
+<meta property="og:image" content="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 1200 630'%3E%3Crect width='1200' height='630' fill='%230a0a0a'/%3E%3Ctext x='60' y='120' font-family='Courier New' font-size='72' font-weight='bold' fill='%2300ff41' letter-spacing='8'%3EMODEM SIM%3C/text%3E%3Ctext x='60' y='170' font-family='Courier New' font-size='24' fill='%23666'%3EDialup modem handshake simulator%3C/text%3E%3Crect x='60' y='210' width='1080' height='200' rx='4' fill='%230d0d0d' stroke='%23333' stroke-width='1'/%3E%3Crect x='70' y='350' width='30' height='50' fill='%23002200'/%3E%3Crect x='105' y='330' width='30' height='70' fill='%23003300'/%3E%3Crect x='140' y='310' width='30' height='90' fill='%23004400'/%3E%3Crect x='175' y='220' width='80' height='180' fill='%23003300'/%3E%3Crect x='175' y='280' width='80' height='40' fill='%2300ff41' opacity='0.4'/%3E%3Crect x='260' y='240' width='60' height='160' fill='%23002200'/%3E%3Crect x='260' y='300' width='60' height='30' fill='%2300aa00' opacity='0.3'/%3E%3Crect x='325' y='220' width='100' height='180' fill='%23004400'/%3E%3Crect x='325' y='250' width='100' height='20' fill='%2300ff41' opacity='0.5'/%3E%3Crect x='325' y='290' width='100' height='15' fill='%2300cc00' opacity='0.4'/%3E%3Crect x='325' y='330' width='100' height='10' fill='%2300aa00' opacity='0.3'/%3E%3Crect x='430' y='220' width='120' height='180' fill='%23003300'/%3E%3Cline x1='430' y1='230' x2='550' y2='230' stroke='%2300ff41' stroke-width='2' opacity='0.6'/%3E%3Cline x1='430' y1='250' x2='550' y2='250' stroke='%2300ff41' stroke-width='2' opacity='0.5'/%3E%3Cline x1='430' y1='270' x2='550' y2='270' stroke='%2300ff41' stroke-width='2' opacity='0.5'/%3E%3Cline x1='430' y1='290' x2='550' y2='290' stroke='%2300ff41' stroke-width='2' opacity='0.4'/%3E%3Cline x1='430' y1='310' x2='550' y2='310' stroke='%2300ff41' stroke-width='2' opacity='0.4'/%3E%3Cline x1='430' y1='330' x2='550' y2='330' stroke='%2300ff41' stroke-width='2' opacity='0.3'/%3E%3Cline x1='430' y1='350' x2='550' y2='350' stroke='%2300ff41' stroke-width='2' opacity='0.3'/%3E%3Crect x='555' y='220' width='200' height='180' fill='%23002200'/%3E%3Crect x='555' y='240' width='200' height='120' fill='%23003300' opacity='0.6'/%3E%3Crect x='760' y='340' width='80' height='60' fill='%23002200'/%3E%3Crect x='845' y='350' width='80' height='50' fill='%23001a00'/%3E%3Crect x='930' y='360' width='80' height='40' fill='%23001100'/%3E%3Ctext x='80' y='440' font-family='Courier New' font-size='14' fill='%23555'%3E300 Hz%3C/text%3E%3Ctext x='500' y='440' font-family='Courier New' font-size='14' fill='%23555'%3E2100 Hz%3C/text%3E%3Ctext x='900' y='440' font-family='Courier New' font-size='14' fill='%23555'%3E3400 Hz%3C/text%3E%3Ctext x='60' y='520' font-family='Courier New' font-size='18' fill='%23444'%3EATDT5550147%3C/text%3E%3Ctext x='60' y='550' font-family='Courier New' font-size='18' fill='%2300ff41'%3ECONNECT 33600%3C/text%3E%3Ctext x='60' y='600' font-family='Courier New' font-size='16' fill='%23444'%3EAn afternoon of exploration by %40jqr and Claude%3C/text%3E%3C/svg%3E">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="MODEM SIM">
+<meta name="twitter:description" content="Recreate the sound of a dialup modem handshake. Accurate audio synthesis with real-time spectrogram.">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='4' fill='%230a0a0a'/><rect x='3' y='3' width='26' height='26' rx='2' fill='%230d0d0d' stroke='%23333' stroke-width='0.5'/><rect x='5' y='20' width='4' height='7' fill='%23002200'/><rect x='10' y='16' width='4' height='11' fill='%23003300'/><rect x='10' y='20' width='4' height='3' fill='%2300ff41' opacity='0.5'/><rect x='15' y='10' width='4' height='17' fill='%23003300'/><rect x='15' y='14' width='4' height='2' fill='%2300ff41' opacity='0.6'/><rect x='15' y='18' width='4' height='2' fill='%2300cc00' opacity='0.4'/><rect x='20' y='8' width='4' height='19' fill='%23002200'/><rect x='20' y='10' width='4' height='12' fill='%23003300' opacity='0.5'/><rect x='25' y='14' width='3' height='13' fill='%23001a00'/><line x1='4' y1='5' x2='28' y2='5' stroke='%2300ff41' stroke-width='1' opacity='0.3'/><line x1='4' y1='8' x2='28' y2='8' stroke='%2300ff41' stroke-width='0.5' opacity='0.2'/></svg>">
 <style>
 * { margin: 0; padding: 0; box-sizing: border-box; }
 
@@ -253,7 +262,7 @@ select {
 <body>
 
 <header>
-  <h1>Modem Handshake Simulator</h1>
+  <h1>MODEM SIM</h1>
   <div class="controls">
     <button id="btn-dial" onclick="startHandshake()">Dial</button>
     <button id="btn-pause" onclick="togglePause()" disabled>Pause</button>
@@ -297,50 +306,53 @@ select {
     </div>
   </div>
 
-  <div class="info-panel">
-    <div class="phase-display">
-      <h3 id="phase-header">Current Phase</h3>
-      <div class="phase-name" id="phase-name">Idle</div>
-      <div class="phase-detail" id="phase-detail">Ready to dial</div>
-    </div>
+  <div style="width: 280px; border-left: 1px solid #333; display: flex; flex-direction: column; flex-shrink: 0;">
+    <div class="info-panel" style="flex: 1; border-left: none;">
+      <div class="phase-display">
+        <h3 id="phase-header">Current Phase</h3>
+        <div class="phase-name" id="phase-name">Idle</div>
+        <div class="phase-detail" id="phase-detail">Ready to dial</div>
+      </div>
 
-    <div class="phase-display">
-      <h3>Handshake Sequence</h3>
-      <div class="phase-timeline" id="phase-timeline"></div>
-    </div>
+      <div class="phase-display">
+        <h3>Handshake Sequence</h3>
+        <div class="phase-timeline" id="phase-timeline"></div>
+      </div>
 
-    <div class="stats">
-      <h3>Signal Stats</h3>
-      <div class="stat-row">
-        <span class="stat-label">Frequency</span>
-        <span class="stat-value" id="stat-freq">&mdash;</span>
+      <div class="stats">
+        <h3>Signal Stats</h3>
+        <div class="stat-row">
+          <span class="stat-label">Frequency</span>
+          <span class="stat-value" id="stat-freq">&mdash;</span>
+        </div>
+        <div class="stat-row">
+          <span class="stat-label">Level</span>
+          <span class="stat-value" id="stat-level">&mdash;</span>
+        </div>
+        <div class="stat-row">
+          <span class="stat-label">SNR</span>
+          <span class="stat-value" id="stat-snr">&mdash;</span>
+        </div>
+        <div class="stat-row">
+          <span class="stat-label">Baud Rate</span>
+          <span class="stat-value" id="stat-baud">&mdash;</span>
+        </div>
+        <div class="stat-row">
+          <span class="stat-label">Connect Speed</span>
+          <span class="stat-value" id="stat-speed">&mdash;</span>
+        </div>
+        <div class="stat-row">
+          <span class="stat-label">Elapsed</span>
+          <span class="stat-value" id="stat-elapsed">&mdash;</span>
+        </div>
       </div>
-      <div class="stat-row">
-        <span class="stat-label">Level</span>
-        <span class="stat-value" id="stat-level">&mdash;</span>
-      </div>
-      <div class="stat-row">
-        <span class="stat-label">SNR</span>
-        <span class="stat-value" id="stat-snr">&mdash;</span>
-      </div>
-      <div class="stat-row">
-        <span class="stat-label">Baud Rate</span>
-        <span class="stat-value" id="stat-baud">&mdash;</span>
-      </div>
-      <div class="stat-row">
-        <span class="stat-label">Connect Speed</span>
-        <span class="stat-value" id="stat-speed">&mdash;</span>
-      </div>
-      <div class="stat-row">
-        <span class="stat-label">Elapsed</span>
-        <span class="stat-value" id="stat-elapsed">&mdash;</span>
-      </div>
-    </div>
 
-    <div class="log">
-      <h3>AT Log</h3>
-      <div id="log-content"></div>
+      <div class="log">
+        <h3>AT Log</h3>
+        <div id="log-content"></div>
+      </div>
     </div>
+    <div style="font-size: 10px; color: #666; text-align: left; padding: 6px 12px; flex-shrink: 0; border-top: 1px solid #333;">An afternoon of exploration by<br><a href="https://thejqr.com" style="color: #888; text-decoration: none;">@jqr</a> and <a href="https://claude.ai" style="color: #888; text-decoration: none;">Claude</a></div>
   </div>
 </div>
 
@@ -357,6 +369,8 @@ let activeNodes = [];
 let handshakeRunning = false;
 let handshakeAbort = null;
 let startTime = 0;
+let pausedAt = 0;
+let pauseOffset = 0;
 let animFrameId = null;
 let currentPhaseId = null;
 let hoveredPhaseId = null;
@@ -862,6 +876,7 @@ async function runHandshake(startPhaseId = null, skipToPhaseId = null) {
   const quality = getLineQuality();
 
   startTime = audioCtx.currentTime;
+  pauseOffset = 0;
 
   // Persistent line impairments
   const lineNoise = createLineNoise(0.05);
@@ -1628,7 +1643,8 @@ function renderSpectrogramStatic() {
 function updateStats(freqData, timeData) {
   if (!handshakeRunning) return;
 
-  const elapsed = audioCtx.currentTime - startTime;
+  const currentPause = paused ? (audioCtx.currentTime - pausedAt) : 0;
+  const elapsed = audioCtx.currentTime - startTime - pauseOffset - currentPause;
   setStat('elapsed', elapsed.toFixed(1) + 's');
 
   // RMS level
@@ -1683,8 +1699,10 @@ function togglePause() {
   paused = !paused;
   document.getElementById('btn-pause').textContent = paused ? 'Resume' : 'Pause';
   if (paused) {
+    pausedAt = audioCtx.currentTime;
     masterGain.gain.setValueAtTime(0, audioCtx.currentTime);
   } else {
+    pauseOffset += audioCtx.currentTime - pausedAt;
     setVolume(document.getElementById('volume').value / 100 * 0.8);
     if (pauseResolve) {
       pauseResolve();
