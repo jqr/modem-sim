@@ -1863,20 +1863,26 @@ function saveSettings() {
     s[id] = document.getElementById(id).value;
   });
   try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(s)); } catch(e) {}
+  const params = new URLSearchParams();
+  settingIds.forEach(id => params.set(id, s[id]));
+  history.replaceState(null, '', '#' + params.toString());
 }
 
 function loadSettings() {
+  let applied = {};
   try {
     const s = JSON.parse(localStorage.getItem(SETTINGS_KEY));
-    if (!s) return;
-    settingIds.forEach(id => {
-      if (s[id] != null) document.getElementById(id).value = s[id];
-    });
-    document.getElementById('quality-display').textContent = document.getElementById('line-quality').value + '%';
+    if (s) applied = s;
   } catch(e) {}
+  const params = new URLSearchParams(location.hash.slice(1));
+  params.forEach((v, k) => { if (settingIds.includes(k)) applied[k] = v; });
+  settingIds.forEach(id => {
+    if (applied[id] != null) document.getElementById(id).value = applied[id];
+  });
+  document.getElementById('quality-display').textContent = document.getElementById('line-quality').value + '%';
 }
 
-['dial-mode', 'phone-number', 'line-quality', 'protocol', 'volume'].forEach(id => {
+settingIds.forEach(id => {
   document.getElementById(id).addEventListener('change', saveSettings);
   document.getElementById(id).addEventListener('input', saveSettings);
 });
