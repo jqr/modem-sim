@@ -1,0 +1,6 @@
+#!/bin/bash
+set -euo pipefail
+
+cd "$(dirname "$0")/.."
+
+~/code/homenet/bin/add-site modem.thejqr.com ./public
