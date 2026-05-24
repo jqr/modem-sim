@@ -230,6 +230,50 @@ select {
 .stat-label { color: #666; }
 .stat-value { color: #00ff41; }
 
+.snr-bars {
+  display: flex;
+  align-items: flex-end;
+  gap: 1px;
+  height: 50px;
+  border-bottom: 1px solid #333;
+}
+.snr-bar {
+  flex: 1;
+  min-height: 1px;
+  background: #00ff41;
+  transition: height 0.12s linear, background 0.12s linear;
+}
+.snr-bar.notch-mark { outline: 1px solid #ff4136; outline-offset: -1px; }
+.snr-axis {
+  display: flex;
+  justify-content: space-between;
+  font-size: 9px;
+  color: #555;
+  margin-top: 3px;
+}
+
+.endpoints { display: flex; gap: 8px; }
+.endpoint { flex: 1; border: 1px solid #222; padding: 6px; background: #0a0a0a; }
+.ep-title {
+  font-size: 10px;
+  color: #00ff41;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  margin-bottom: 5px;
+}
+.ep-row {
+  display: flex;
+  justify-content: space-between;
+  font-size: 10px;
+  padding: 1px 0;
+}
+.ep-row span:first-child { color: #555; }
+.ep-row span:last-child { color: #999; text-align: right; }
+.ep-state.s-connected { color: #00ff41; }
+.ep-state.s-failed { color: #ff4136; }
+.ep-state.s-retrain { color: #ffb700; }
+.log-entry.error .msg { color: #ff4136; }
+
 .log {
   flex: 1;
   border: 1px solid #333;
@@ -356,6 +400,18 @@ select {
       <input type="range" id="line-quality" min="0" max="100" value="80">
       <span id="quality-display">80%</span>
     </label>
+    <label>Notch Freq:
+      <input type="range" id="notch-freq" min="300" max="3400" step="50" value="2000">
+      <span id="notch-freq-display">2000 Hz</span>
+    </label>
+    <label>Notch Depth:
+      <input type="range" id="notch-depth" min="0" max="100" value="0">
+      <span id="notch-depth-display">0%</span>
+    </label>
+    <label>HF Rolloff:
+      <input type="range" id="rolloff" min="1000" max="3600" step="50" value="3400">
+      <span id="rolloff-display">3400 Hz</span>
+    </label>
     <label>Protocol:
       <select id="protocol">
         <option value="v34">V.34 (33.6k)</option>
@@ -393,6 +449,34 @@ select {
       <div class="phase-display">
         <h3>Handshake Sequence</h3>
         <div class="phase-timeline" id="phase-timeline"></div>
+      </div>
+
+      <div class="stats">
+        <h3>Channel Probe (per-tone SNR)</h3>
+        <div class="snr-bars" id="snr-bars"></div>
+        <div class="snr-axis"><span>150</span><span>1725</span><span>3300 Hz</span></div>
+      </div>
+
+      <div class="stats">
+        <h3>Endpoints</h3>
+        <div class="endpoints">
+          <div class="endpoint" id="ep-orig">
+            <div class="ep-title">Originator</div>
+            <div class="ep-row"><span>State</span><span class="ep-state">idle</span></div>
+            <div class="ep-row"><span>Carrier</span><span class="ep-carrier">&mdash;</span></div>
+            <div class="ep-row"><span>Usable</span><span class="ep-usable">&mdash;</span></div>
+            <div class="ep-row"><span>Dropped</span><span class="ep-dropped">&mdash;</span></div>
+            <div class="ep-row"><span>Proposes</span><span class="ep-rate">&mdash;</span></div>
+          </div>
+          <div class="endpoint" id="ep-ans">
+            <div class="ep-title">Answerer</div>
+            <div class="ep-row"><span>State</span><span class="ep-state">idle</span></div>
+            <div class="ep-row"><span>Carrier</span><span class="ep-carrier">&mdash;</span></div>
+            <div class="ep-row"><span>Usable</span><span class="ep-usable">&mdash;</span></div>
+            <div class="ep-row"><span>Dropped</span><span class="ep-dropped">&mdash;</span></div>
+            <div class="ep-row"><span>Proposes</span><span class="ep-rate">&mdash;</span></div>
+          </div>
+        </div>
       </div>
 
       <div class="stats">
@@ -441,6 +525,8 @@ select {
 let audioCtx = null;
 let masterGain = null;
 let analyser = null;
+let channelNotch = null;
+let channelLP = null;
 let activeNodes = [];
 let handshakeRunning = false;
 let handshakeAbort = null;
@@ -472,8 +558,29 @@ function initAudio() {
   analyser.minDecibels = -100;
   analyser.maxDecibels = -10;
 
-  masterGain.connect(analyser);
+  // Channel impairment chain sits BEFORE the analyser, so the notch and
+  // rolloff show up in the audio AND the spectrogram from one source.
+  channelNotch = audioCtx.createBiquadFilter();
+  channelNotch.type = 'peaking';
+  channelLP = audioCtx.createBiquadFilter();
+  channelLP.type = 'lowpass';
+
+  masterGain.connect(channelNotch);
+  channelNotch.connect(channelLP);
+  channelLP.connect(analyser);
   analyser.connect(audioCtx.destination);
+
+  updateChannelNodes();
+}
+
+function updateChannelNodes() {
+  if (!channelNotch) return;
+  const ch = getChannel();
+  channelNotch.frequency.value = ch.notchFreq;
+  channelNotch.Q.value = ch.notchQ;
+  // Map depth 0..1 to a peaking cut of 0..-48 dB.
+  channelNotch.gain.value = -48 * ch.notchDepth;
+  channelLP.frequency.value = ch.rolloff;
 }
 
 function setVolume(v) {
@@ -482,6 +589,144 @@ function setVolume(v) {
 
 function getLineQuality() {
   return parseInt(document.getElementById('line-quality').value) / 100;
+}
+
+// ============================================================
+// Channel model — frequency response H(f) + per-frequency SNR.
+// The same model drives the audio filters, the spectrogram, the
+// per-tone probe readout, and the endpoint rate negotiation, so
+// what you hear, see, and measure all agree.
+// ============================================================
+
+const PROBE_TONES = Array.from({ length: 21 }, (_, t) => 150 + t * 150); // 150..3300 Hz
+const SNR_USABLE_DB = 12;   // below this a tone/subband is abandoned
+const SNR_MIN_TONES = 6;    // fewer usable tones than this => no carrier
+const SNR_BIT_CAP = 14;     // max bits a single subcarrier can carry
+
+function getChannel() {
+  return {
+    quality:    getLineQuality(),
+    notchFreq:  +document.getElementById('notch-freq').value,
+    notchDepth: +document.getElementById('notch-depth').value / 100,
+    rolloff:    +document.getElementById('rolloff').value,
+    notchQ:     6,
+  };
+}
+
+// Linear voltage gain 0..1 from notch + HF rolloff only (flat loss is
+// folded into the quality-driven base SNR, so it isn't double-counted).
+function channelShape(f, ch) {
+  const bw = ch.notchFreq / ch.notchQ;
+  const notch = 1 - ch.notchDepth * Math.exp(-Math.pow((f - ch.notchFreq) / (bw * 0.6), 2));
+  const lp = 1 / Math.sqrt(1 + Math.pow(f / ch.rolloff, 2));
+  return Math.max(0, notch) * lp;
+}
+
+// Per-frequency SNR in dB. extraNoise lets the answerer see a slightly
+// worse channel than the originator (asymmetric line).
+function channelSNR(f, ch, extraNoise = 0) {
+  const base = 12 + ch.quality * 36 - extraNoise; // 12..48 dB overall
+  const shape = channelShape(f, ch);
+  return base + 20 * Math.log10(Math.max(shape, 1e-4));
+}
+
+// Given a side's SNR profile across PROBE_TONES, decide what it can do.
+function evaluateEndpoint(snrProfile, protocol) {
+  const usable = [];
+  const dropped = [];
+  PROBE_TONES.forEach((f, i) => {
+    if (snrProfile[i] >= SNR_USABLE_DB) usable.push({ f, snr: snrProfile[i] });
+    else dropped.push(f);
+  });
+
+  if (usable.length < SNR_MIN_TONES) {
+    return { failed: true, usable, dropped, carrier: null, rate: 0 };
+  }
+
+  // DMT-style bit loading: each usable subcarrier carries bits ~ SNR/3 dB,
+  // so killing or sagging tones near the notch directly costs throughput.
+  const toneBits = snr => Math.min(SNR_BIT_CAP, Math.max(1, Math.floor(snr / 3)));
+  const capacity = usable.reduce((a, b) => a + toneBits(b.snr), 0);
+  const cleanCapacity = PROBE_TONES.length * SNR_BIT_CAP;
+
+  const meanSNR = usable.reduce((a, b) => a + b.snr, 0) / usable.length;
+  const carrier = Math.round(usable.reduce((a, b) => a + b.f, 0) / usable.length);
+  const bitsPerSymbol = Math.round(capacity / usable.length);
+
+  const maxSpeed = { v22: 2400, v32: 14400, v34: 33600, v90: 53333 };
+  let rate = Math.round((maxSpeed[protocol] * capacity / cleanCapacity) / 100) * 100;
+  rate = Math.min(rate, maxSpeed[protocol]);
+
+  return { failed: false, usable, dropped, carrier, rate, meanSNR, bitsPerSymbol };
+}
+
+// Contiguous-range summary like "1950–2250 Hz" for the dropped bands.
+function formatDropped(dropped) {
+  if (!dropped.length) return 'none';
+  const ranges = [];
+  let start = dropped[0], prev = dropped[0];
+  for (let i = 1; i < dropped.length; i++) {
+    if (dropped[i] - prev > 150) { ranges.push([start, prev]); start = dropped[i]; }
+    prev = dropped[i];
+  }
+  ranges.push([start, prev]);
+  return ranges.map(([a, b]) => a === b ? `${a}` : `${a}–${b}`).join(', ') + ' Hz';
+}
+
+let negotiation = null; // { orig, ans, finalRate, failed } — set during a run
+
+function renderSNRBars(profile, ch) {
+  const container = document.getElementById('snr-bars');
+  if (container.children.length !== PROBE_TONES.length) {
+    container.innerHTML = '';
+    PROBE_TONES.forEach(() => {
+      const bar = document.createElement('div');
+      bar.className = 'snr-bar';
+      container.appendChild(bar);
+    });
+  }
+  PROBE_TONES.forEach((f, i) => {
+    const snr = profile[i];
+    const bar = container.children[i];
+    const h = Math.max(2, Math.min(100, (snr / 48) * 100));
+    bar.style.height = h + '%';
+    bar.style.background = snr < SNR_USABLE_DB ? '#ff4136' : snr < 24 ? '#ffb700' : '#00ff41';
+    bar.title = `${f} Hz: ${Math.round(snr)} dB`;
+    const inNotch = ch.notchDepth > 0.05 && Math.abs(f - ch.notchFreq) <= ch.notchFreq / ch.notchQ;
+    bar.classList.toggle('notch-mark', inNotch);
+  });
+}
+
+function renderEndpoint(id, ep, state) {
+  const root = document.getElementById(id);
+  const stEl = root.querySelector('.ep-state');
+  stEl.textContent = state;
+  stEl.className = 'ep-state' + (
+    state === 'connected' ? ' s-connected' :
+    state === 'no carrier' ? ' s-failed' :
+    state === 'retraining' ? ' s-retrain' : '');
+  root.querySelector('.ep-carrier').innerHTML = ep && ep.carrier ? ep.carrier + ' Hz' : '&mdash;';
+  root.querySelector('.ep-usable').innerHTML = ep ? `${ep.usable.length}/${PROBE_TONES.length}` : '&mdash;';
+  root.querySelector('.ep-dropped').textContent = ep ? formatDropped(ep.dropped) : '—';
+  root.querySelector('.ep-rate').innerHTML = ep && !ep.failed ? ep.rate + ' bps' : (ep && ep.failed ? 'fail' : '&mdash;');
+}
+
+// Recompute everything from the model and paint it. Called live as the
+// channel sliders move (no audio needed) and during the probing/training
+// phases of an actual run.
+function previewChannel(states = null) {
+  const ch = getChannel();
+  const protocol = document.getElementById('protocol').value;
+  const origProfile = PROBE_TONES.map(f => channelSNR(f, ch, 0));
+  const ansProfile  = PROBE_TONES.map(f => channelSNR(f, ch, 2)); // answerer ~2 dB worse
+  const orig = evaluateEndpoint(origProfile, protocol);
+  const ans  = evaluateEndpoint(ansProfile, protocol);
+  renderSNRBars(origProfile, ch);
+  const finalRate = (orig.failed || ans.failed) ? 0 : Math.min(orig.rate, ans.rate);
+  negotiation = { orig, ans, finalRate, failed: orig.failed || ans.failed };
+  renderEndpoint('ep-orig', orig, states ? states.orig : (orig.failed ? 'no carrier' : 'preview'));
+  renderEndpoint('ep-ans',  ans,  states ? states.ans  : (ans.failed ? 'no carrier' : 'preview'));
+  return negotiation;
 }
 
 function stopAllNodes() {
@@ -894,10 +1139,10 @@ function setStat(id, val) {
   document.getElementById('stat-' + id).textContent = val;
 }
 
-function addLog(msg, highlight = false) {
+function addLog(msg, highlight = false, error = false) {
   const container = document.getElementById('log-content');
   const el = document.createElement('div');
-  el.className = 'log-entry' + (highlight ? ' highlight' : '');
+  el.className = 'log-entry' + (highlight ? ' highlight' : '') + (error ? ' error' : '');
   const elapsed = handshakeRunning ? ((audioCtx.currentTime - startTime) | 0) : 0;
   el.innerHTML = `<span class="time">[${elapsed}s]</span> <span class="msg">${msg}</span>`;
   container.appendChild(el);
@@ -1180,12 +1425,14 @@ async function runHandshake(startPhaseId = null, skipToPhaseId = null) {
     { id: 'probing', run: async () => {
       setStat('freq', '150–3300 Hz (21 tones)');
       addLog('L1 probe: 21 tones (150 Hz spacing)');
+      previewChannel({ orig: 'measuring', ans: 'listening' });
       const l1 = createV34Probing(1.0, 0.14);
       l1.start();
       await sleep(1000);
       l1.stop();
       await sleep(100);
       addLog('L2 probe: reverse direction');
+      previewChannel({ orig: 'listening', ans: 'measuring' });
       const l2 = createV34Probing(1.0, 0.14);
       l2.start();
       await sleep(1000);
@@ -1199,6 +1446,10 @@ async function runHandshake(startPhaseId = null, skipToPhaseId = null) {
         probe.stop();
         await sleep(50);
       }
+      // Both sides now have a channel estimate.
+      const neg = previewChannel({ orig: 'measured', ans: 'measured' });
+      if (neg.orig.dropped.length) addLog(`Orig: dropped ${formatDropped(neg.orig.dropped)}`);
+      if (neg.ans.dropped.length) addLog(`Ans: dropped ${formatDropped(neg.ans.dropped)}`);
       await sleep(100);
     }},
 
@@ -1207,8 +1458,29 @@ async function runHandshake(startPhaseId = null, skipToPhaseId = null) {
       const symRate = symbolRates[protocol];
       setStat('freq', `PRBS @ ${symRate} baud`);
       setStat('baud', symRate + ' baud');
+
+      const neg = previewChannel({ orig: 'training', ans: 'training' });
+
+      // A side that lost too much of the band can't lock. Real modems
+      // retry a couple of times before giving up, so show that.
+      if (neg.failed) {
+        for (let attempt = 1; attempt <= 2; attempt++) {
+          addLog(`Training: SNR too low, retrain ${attempt}/2`);
+          previewChannel({ orig: 'retraining', ans: 'retraining' });
+          const rt = createTrainingSignal(1.2, symRate, 0.12);
+          rt.start();
+          await sleep(1200);
+          rt.stop();
+          await sleep(150);
+        }
+        addLog('Equalizer failed to converge', true, true);
+        previewChannel({ orig: 'no carrier', ans: 'no carrier' });
+        await sleep(200);
+        return;
+      }
+
       addLog(`Training: ${symRate} baud PRBS-15`);
-      addLog('QAM constellation mapping');
+      addLog(`Carrier ${neg.orig.carrier} Hz, ${neg.orig.bitsPerSymbol} bits/symbol`);
       const train1 = createTrainingSignal(2.5, symRate, 0.16);
       train1.start();
       await sleep(2500);
@@ -1223,31 +1495,37 @@ async function runHandshake(startPhaseId = null, skipToPhaseId = null) {
     }},
 
     { id: 'negotiate', run: async () => {
+      const neg = negotiation || previewChannel();
+      if (neg.failed) { await sleep(50); return; }
       addLog('Rate negotiation');
-      const speedMap = { 'v22': 2400, 'v32': 14400, 'v34': 33600, 'v90': 53333 };
+      addLog(`Orig proposes ${neg.orig.rate}, Ans proposes ${neg.ans.rate}`);
       const neg1 = createOsc(1200, 'sine', 0.08);
       const neg2 = createOsc(2400, 'sine', 0.06);
       neg1.start(); neg2.start();
       await sleep(400);
       neg1.stop(); neg2.stop();
       await sleep(80);
-      let speed = speedMap[protocol];
-      if (quality < 0.3) speed = Math.round(speed * 0.5);
-      else if (quality < 0.6) speed = Math.round(speed * 0.75);
-      else if (quality < 0.85) speed = Math.round(speed * 0.9);
-      setStat('speed', speed + ' bps');
-      setStat('snr', Math.round(15 + quality * 35) + ' dB');
+      addLog(`Agreed: ${neg.finalRate} bps (min of both)`);
+      setStat('speed', neg.finalRate + ' bps');
+      setStat('snr', Math.round(neg.orig.meanSNR) + ' dB');
     }},
 
     { id: 'connect', run: async () => {
-      const speedMap = { 'v22': 2400, 'v32': 14400, 'v34': 33600, 'v90': 53333 };
-      let speed = speedMap[protocol];
-      if (quality < 0.3) speed = Math.round(speed * 0.5);
-      else if (quality < 0.6) speed = Math.round(speed * 0.75);
-      else if (quality < 0.85) speed = Math.round(speed * 0.9);
-      addLog(`CONNECT ${speed}`, true);
+      const neg = negotiation || previewChannel();
+      if (neg.failed) {
+        addLog('NO CARRIER', false, true);
+        setStat('speed', '—');
+        renderEndpoint('ep-orig', neg.orig, 'no carrier');
+        renderEndpoint('ep-ans', neg.ans, 'no carrier');
+        await sleep(300);
+        stopHandshake();
+        return;
+      }
+      addLog(`CONNECT ${neg.finalRate}`, true);
       addLog(`Protocol: ${protocol.toUpperCase()}`);
-      addLog(`SNR: ${Math.round(15 + quality * 35)} dB`);
+      addLog(`SNR: ${Math.round(neg.orig.meanSNR)} dB`);
+      renderEndpoint('ep-orig', neg.orig, 'connected');
+      renderEndpoint('ep-ans', neg.ans, 'connected');
       await sleep(300);
       stopHandshake();
     }},
@@ -1747,6 +2025,8 @@ async function startHandshake() {
   handshakeRunning = true;
   paused = false;
   skipBudget = 0;
+  negotiation = null;
+  updateChannelNodes();
   document.getElementById('btn-dial').textContent = 'Redial';
   document.getElementById('btn-pause').disabled = false;
   document.getElementById('btn-pause').textContent = 'Pause';
@@ -1808,7 +2088,29 @@ document.getElementById('volume').addEventListener('input', e => {
 
 document.getElementById('line-quality').addEventListener('input', e => {
   document.getElementById('quality-display').textContent = e.target.value + '%';
+  updateChannelNodes();
+  previewChannel();
 });
+
+document.getElementById('notch-freq').addEventListener('input', e => {
+  document.getElementById('notch-freq-display').textContent = e.target.value + ' Hz';
+  updateChannelNodes();
+  previewChannel();
+});
+
+document.getElementById('notch-depth').addEventListener('input', e => {
+  document.getElementById('notch-depth-display').textContent = e.target.value + '%';
+  updateChannelNodes();
+  previewChannel();
+});
+
+document.getElementById('rolloff').addEventListener('input', e => {
+  document.getElementById('rolloff-display').textContent = e.target.value + ' Hz';
+  updateChannelNodes();
+  previewChannel();
+});
+
+document.getElementById('protocol').addEventListener('change', previewChannel);
 
 
 
@@ -1855,7 +2157,7 @@ document.getElementById('dial-mode').addEventListener('change', () => {
 });
 
 const SETTINGS_KEY = 'modem-sim-settings';
-const settingIds = ['dial-mode', 'phone-number', 'line-quality', 'protocol', 'volume'];
+const settingIds = ['dial-mode', 'phone-number', 'line-quality', 'protocol', 'volume', 'notch-freq', 'notch-depth', 'rolloff'];
 
 function saveSettings() {
   const s = {};
@@ -1880,6 +2182,9 @@ function loadSettings() {
     if (applied[id] != null) document.getElementById(id).value = applied[id];
   });
   document.getElementById('quality-display').textContent = document.getElementById('line-quality').value + '%';
+  document.getElementById('notch-freq-display').textContent = document.getElementById('notch-freq').value + ' Hz';
+  document.getElementById('notch-depth-display').textContent = document.getElementById('notch-depth').value + '%';
+  document.getElementById('rolloff-display').textContent = document.getElementById('rolloff').value + ' Hz';
 }
 
 settingIds.forEach(id => {
@@ -1889,6 +2194,7 @@ settingIds.forEach(id => {
 
 loadSettings();
 buildTimeline();
+previewChannel();
 
 </script>
 </body>
