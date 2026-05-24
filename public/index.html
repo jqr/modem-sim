@@ -412,6 +412,9 @@ select {
       <input type="range" id="rolloff" min="1000" max="3600" step="50" value="3400">
       <span id="rolloff-display">3400 Hz</span>
     </label>
+    <label title="Add a few dB of random SNR variation per training attempt, so marginal lines re-equalize and land differently each run">Jitter:
+      <input type="checkbox" id="jitter">
+    </label>
     <label>Protocol:
       <select id="protocol">
         <option value="v34">V.34 (33.6k)</option>
@@ -602,6 +605,36 @@ const PROBE_TONES = Array.from({ length: 21 }, (_, t) => 150 + t * 150); // 150.
 const SNR_USABLE_DB = 12;   // below this a tone/subband is abandoned
 const SNR_MIN_TONES = 6;    // fewer usable tones than this => no carrier
 const SNR_BIT_CAP = 14;     // max bits a single subcarrier can carry
+const JITTER_DB = 5;        // per-attempt SNR variation when jitter is enabled
+
+const SYMBOL_RATES = { v22: 600, v32: 2400, v34: 3429, v90: 8000 };
+const MAX_SPEED = { v22: 2400, v32: 14400, v34: 33600, v90: 53333 };
+
+// Standard connect rates a modem falls back through (descending).
+const STD_RATES = [53333, 48000, 44000, 40000, 36000, 33600, 31200, 28800,
+                   26400, 24000, 21600, 19200, 16800, 14400, 12000, 9600,
+                   7200, 4800, 2400];
+
+// Snap a raw achievable rate down to the nearest standard rate the protocol
+// allows. Returns 0 if even the floor (2400) can't be met => no carrier.
+function snapRate(rate, protocol) {
+  const cands = STD_RATES.filter(r => r <= MAX_SPEED[protocol] && r <= rate);
+  return cands.length ? cands[0] : 0;
+}
+
+// The visible fallback sequence from the optimistic top rate down to where
+// the line actually locks, capped to a few steps so it reads as a descent.
+function descentSteps(top, land, maxSteps = 4) {
+  const idxTop = STD_RATES.indexOf(top), idxLand = STD_RATES.indexOf(land);
+  if (idxLand <= idxTop + 1) return [land];      // lock directly (no real fallback)
+  const span = idxLand - idxTop;
+  if (span + 1 <= maxSteps) return STD_RATES.slice(idxTop, idxLand + 1);
+  const steps = [];
+  for (let k = 0; k < maxSteps; k++) {
+    steps.push(STD_RATES[Math.round(idxTop + span * (k / (maxSteps - 1)))]);
+  }
+  return [...new Set(steps)];
+}
 
 function getChannel() {
   return {
@@ -653,9 +686,8 @@ function evaluateEndpoint(snrProfile, protocol) {
   const carrier = Math.round(usable.reduce((a, b) => a + b.f, 0) / usable.length);
   const bitsPerSymbol = Math.round(capacity / usable.length);
 
-  const maxSpeed = { v22: 2400, v32: 14400, v34: 33600, v90: 53333 };
-  let rate = Math.round((maxSpeed[protocol] * capacity / cleanCapacity) / 100) * 100;
-  rate = Math.min(rate, maxSpeed[protocol]);
+  let rate = Math.round((MAX_SPEED[protocol] * capacity / cleanCapacity) / 100) * 100;
+  rate = Math.min(rate, MAX_SPEED[protocol]);
 
   return { failed: false, usable, dropped, carrier, rate, meanSNR, bitsPerSymbol };
 }
@@ -714,18 +746,29 @@ function renderEndpoint(id, ep, state) {
 // Recompute everything from the model and paint it. Called live as the
 // channel sliders move (no audio needed) and during the probing/training
 // phases of an actual run.
-function previewChannel(states = null) {
+// Measure both endpoints against the current channel and resolve a final
+// rate. jitterDb adds a per-side random SNR offset so repeated attempts on a
+// marginal line differ (used during training retrains, not the live preview).
+function computeNegotiation(jitterDb = 0) {
   const ch = getChannel();
   const protocol = document.getElementById('protocol').value;
-  const origProfile = PROBE_TONES.map(f => channelSNR(f, ch, 0));
-  const ansProfile  = PROBE_TONES.map(f => channelSNR(f, ch, 2)); // answerer ~2 dB worse
+  const off = () => jitterDb ? (Math.random() * 2 - 1) * jitterDb : 0;
+  const origProfile = PROBE_TONES.map(f => channelSNR(f, ch, 0) + off());
+  const ansProfile  = PROBE_TONES.map(f => channelSNR(f, ch, 2) + off()); // answerer ~2 dB worse
   const orig = evaluateEndpoint(origProfile, protocol);
   const ans  = evaluateEndpoint(ansProfile, protocol);
-  renderSNRBars(origProfile, ch);
-  const finalRate = (orig.failed || ans.failed) ? 0 : Math.min(orig.rate, ans.rate);
-  negotiation = { orig, ans, finalRate, failed: orig.failed || ans.failed };
-  renderEndpoint('ep-orig', orig, states ? states.orig : (orig.failed ? 'no carrier' : 'preview'));
-  renderEndpoint('ep-ans',  ans,  states ? states.ans  : (ans.failed ? 'no carrier' : 'preview'));
+  const rawRate = (orig.failed || ans.failed) ? 0 : Math.min(orig.rate, ans.rate);
+  const finalRate = rawRate ? snapRate(rawRate, protocol) : 0;
+  const failed = orig.failed || ans.failed || finalRate === 0;
+  return { ch, protocol, origProfile, ansProfile, orig, ans, finalRate, failed };
+}
+
+function previewChannel(states = null) {
+  const n = computeNegotiation(0);
+  renderSNRBars(n.origProfile, n.ch);
+  negotiation = n;
+  renderEndpoint('ep-orig', n.orig, states ? states.orig : (n.orig.failed ? 'no carrier' : 'preview'));
+  renderEndpoint('ep-ans',  n.ans,  states ? states.ans  : (n.ans.failed ? 'no carrier' : 'preview'));
   return negotiation;
 }
 
@@ -1454,58 +1497,77 @@ async function runHandshake(startPhaseId = null, skipToPhaseId = null) {
     }},
 
     { id: 'training', run: async () => {
-      const symbolRates = { 'v22': 600, 'v32': 2400, 'v34': 3429, 'v90': 8000 };
-      const symRate = symbolRates[protocol];
+      const symRate = SYMBOL_RATES[protocol];
       setStat('freq', `PRBS @ ${symRate} baud`);
       setStat('baud', symRate + ' baud');
 
-      const neg = previewChannel({ orig: 'training', ans: 'training' });
+      const jitterOn = document.getElementById('jitter').checked;
 
-      // A side that lost too much of the band can't lock. Real modems
-      // retry a couple of times before giving up, so show that.
-      if (neg.failed) {
-        for (let attempt = 1; attempt <= 2; attempt++) {
-          addLog(`Training: SNR too low, retrain ${attempt}/2`);
-          previewChannel({ orig: 'retraining', ans: 'retraining' });
-          const rt = createTrainingSignal(1.2, symRate, 0.12);
-          rt.start();
-          await sleep(1200);
-          rt.stop();
-          await sleep(150);
+      async function trainBurst(dur, gain, states) {
+        renderEndpoint('ep-orig', negotiation.orig, states);
+        renderEndpoint('ep-ans', negotiation.ans, states);
+        const tr = createTrainingSignal(dur, symRate, gain);
+        tr.start();
+        await sleep(dur * 1000);
+        tr.stop();
+        await sleep(120);
+      }
+
+      let n = computeNegotiation(jitterOn ? JITTER_DB : 0);
+      negotiation = n;
+
+      // Equalizer can't lock at all. Re-equalize a couple of times — with
+      // jitter on, a marginal line may catch on a later attempt — then give up.
+      if (n.failed) {
+        for (let attempt = 1; attempt <= 3; attempt++) {
+          addLog(`Equalizer retrain ${attempt}/3`);
+          await trainBurst(1.0, 0.12, 'retraining');
+          if (jitterOn) {
+            n = computeNegotiation(JITTER_DB);
+            negotiation = n;
+            if (!n.failed) { addLog('Re-equalized — carrier acquired'); break; }
+          }
         }
-        addLog('Equalizer failed to converge', true, true);
-        previewChannel({ orig: 'no carrier', ans: 'no carrier' });
-        await sleep(200);
-        return;
+        if (n.failed) {
+          addLog('Equalizer failed to converge', false, true);
+          renderEndpoint('ep-orig', n.orig, 'no carrier');
+          renderEndpoint('ep-ans', n.ans, 'no carrier');
+          await sleep(200);
+          return;
+        }
       }
 
       addLog(`Training: ${symRate} baud PRBS-15`);
-      addLog(`Carrier ${neg.orig.carrier} Hz, ${neg.orig.bitsPerSymbol} bits/symbol`);
-      const train1 = createTrainingSignal(2.5, symRate, 0.16);
-      train1.start();
-      await sleep(2500);
-      train1.stop();
-      await sleep(100);
-      addLog('Reverse training');
-      const train2 = createTrainingSignal(2.0, symRate, 0.14);
-      train2.start();
-      await sleep(2000);
-      train2.stop();
-      await sleep(200);
+
+      // Start optimistic, retrain downward through standard rates until the
+      // line holds, then lock. Clean lines lock on the first burst.
+      const topRate = STD_RATES.find(r => r <= MAX_SPEED[protocol]);
+      const steps = descentSteps(topRate, n.finalRate, 4);
+      for (let i = 0; i < steps.length; i++) {
+        const target = steps[i];
+        const last = i === steps.length - 1;
+        if (last) {
+          addLog(`Locked ${target} bps — carrier ${n.orig.carrier} Hz, ${n.orig.bitsPerSymbol} bits/sym`);
+          await trainBurst(2.2, 0.16, 'training');
+        } else {
+          addLog(`Retrain: ${target} too high, falling back`);
+          await trainBurst(0.9, 0.14, 'retraining');
+        }
+      }
     }},
 
     { id: 'negotiate', run: async () => {
       const neg = negotiation || previewChannel();
       if (neg.failed) { await sleep(50); return; }
       addLog('Rate negotiation');
-      addLog(`Orig proposes ${neg.orig.rate}, Ans proposes ${neg.ans.rate}`);
+      addLog(`Orig est ${neg.orig.rate}, Ans est ${neg.ans.rate}`);
       const neg1 = createOsc(1200, 'sine', 0.08);
       const neg2 = createOsc(2400, 'sine', 0.06);
       neg1.start(); neg2.start();
       await sleep(400);
       neg1.stop(); neg2.stop();
       await sleep(80);
-      addLog(`Agreed: ${neg.finalRate} bps (min of both)`);
+      addLog(`Agreed: ${neg.finalRate} bps`);
       setStat('speed', neg.finalRate + ' bps');
       setStat('snr', Math.round(neg.orig.meanSNR) + ' dB');
     }},
@@ -2157,12 +2219,13 @@ document.getElementById('dial-mode').addEventListener('change', () => {
 });
 
 const SETTINGS_KEY = 'modem-sim-settings';
-const settingIds = ['dial-mode', 'phone-number', 'line-quality', 'protocol', 'volume', 'notch-freq', 'notch-depth', 'rolloff'];
+const settingIds = ['dial-mode', 'phone-number', 'line-quality', 'protocol', 'volume', 'notch-freq', 'notch-depth', 'rolloff', 'jitter'];
 
 function saveSettings() {
   const s = {};
   settingIds.forEach(id => {
-    s[id] = document.getElementById(id).value;
+    const el = document.getElementById(id);
+    s[id] = el.type === 'checkbox' ? (el.checked ? '1' : '0') : el.value;
   });
   try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(s)); } catch(e) {}
   const params = new URLSearchParams();
@@ -2179,7 +2242,10 @@ function loadSettings() {
   const params = new URLSearchParams(location.hash.slice(1));
   params.forEach((v, k) => { if (settingIds.includes(k)) applied[k] = v; });
   settingIds.forEach(id => {
-    if (applied[id] != null) document.getElementById(id).value = applied[id];
+    if (applied[id] == null) return;
+    const el = document.getElementById(id);
+    if (el.type === 'checkbox') el.checked = applied[id] === '1' || applied[id] === true;
+    else el.value = applied[id];
   });
   document.getElementById('quality-display').textContent = document.getElementById('line-quality').value + '%';
   document.getElementById('notch-freq-display').textContent = document.getElementById('notch-freq').value + ' Hz';
