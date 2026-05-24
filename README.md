@@ -58,6 +58,7 @@ Browser-based audio simulator that recreates the sound and behavior of a dialup 
 - L1 and L2 probing signals sent in each direction
 - Measures channel frequency response, signal-to-noise ratio, and group delay
 - Band-edge probes at 300 and 3300 Hz measure rolloff characteristics
+- The simulator measures a per-tone SNR for each of the 21 probe tones against the channel model and displays it as a bar graph — tones sag wherever the line is bad (notch, rolloff). Originator and answerer measure independently (the answerer sees a slightly worse line).
 - Source: ITU-T V.34 (Section 7, Phase 2)
 - https://www.itu.int/rec/T-REC-V.34
 - https://en.wikipedia.org/wiki/V.34
@@ -67,9 +68,11 @@ Browser-based audio simulator that recreates the sound and behavior of a dialup 
 - Modulated as QAM onto a 1800 Hz carrier with raised-cosine pulse shaping
 - Symbol rates: 600 (V.22bis), 2400 (V.32bis), 3429 (V.34), 8000 (V.90)
 - Creates the characteristic "waterfall" sound
+- DMT-style bit loading: each usable subcarrier carries bits proportional to its SNR (~3 dB/bit), tones below ~12 dB are abandoned, and the carrier center shifts toward the cleanest part of the band. A line that can't hold the target rate retrains and falls back through the standard rates until it locks; if too little of the band survives, it gives up with NO CARRIER.
 - Source: ITU-T V.34 (Section 7, Phase 3)
 
 **Rate Negotiation** — Parameter exchange for final connection speed
+- Each endpoint proposes a rate from its own SNR estimate; the final connect speed is the lower of the two, snapped to a standard rate
 - Source: ITU-T V.34 (Section 7, Phase 4)
 
 ### Line Impairments
@@ -82,6 +85,14 @@ Browser-based audio simulator that recreates the sound and behavior of a dialup 
 
 **Telephone Band Noise** — White noise bandpass filtered to 300–3400 Hz
 - Models the PSTN voice channel bandwidth
+
+**Frequency Notch** — A configurable dip in the channel response (center frequency, depth, width)
+- Models a narrowband impairment such as a bridge tap or loading-coil resonance
+- Applied as a filter on the audio, so it shows up in the spectrogram, the sound, and the per-tone probe SNR — and the modems route around it by abandoning the affected subcarriers
+
+**High-Frequency Rolloff** — Progressive attenuation above a configurable corner frequency
+- Models the loss of the upper voice band on long or loaded local loops
+- Reduces SNR (and therefore bit loading) on the high tones first
 
 ### Protocol Specifications
 
@@ -115,3 +126,4 @@ The simulator aims for faithful reproduction of the frequencies, modulation sche
 - V.34 probing uses equal-amplitude tones (real probing has specific amplitude/phase relationships per ITU-T V.34 Table 2)
 - Training uses BPSK-equivalent QAM (real V.34 uses higher-order constellations: 4-QAM through 1664-QAM)
 - Phase timing is approximate (real timing depends on line conditions and modem firmware)
+- The probing/training/negotiation behavior is driven by a channel *model* (`H(f)` plus a per-frequency SNR estimate), not by actually demodulating the synthesized audio. The audio you hear, the spectrogram, the per-tone SNR bars, and the negotiated rate all derive from the same model, so they agree — but the modems aren't really decoding bits off the line.
